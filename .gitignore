@@ -1,0 +1,32 @@
+# Build output
+/build/
+
+# Portable MinGW toolchain (download separately — see tools/README.md)
+/tools/w64devkit/
+
+# Binaries and compiler leftovers
+*.exe
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.pdb
+*.ilk
+*.exp
+*.d
+
+# Screenshots produced by --screenshot (keep docs/screenshot.png)
+*.bmp
+
+# Editor / OS
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
+.DS_Store
+*~
+*.swp
