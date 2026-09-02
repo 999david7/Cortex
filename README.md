@@ -1,7 +1,5 @@
-<<<<<<< HEAD
-"# Cortex" 
-=======
-# AI IDE
+
+# Cortex
 
 A local code editor written entirely in C++ that talks to your own models through
 [Ollama](https://ollama.com). No cloud service, no account, no telemetry — the editor
