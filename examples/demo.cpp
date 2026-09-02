@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-// Returns the number of vowels in the given text.
+// Returns the number of vowels in given text.
 int count_vowels(const std::string& text) {
     int count = 0;
     for (char c : text) {
