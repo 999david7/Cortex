@@ -1,4 +1,7 @@
-// Entry point: frameless Win32 window, Direct3D 11 device and the ImGui loop.
+// Entry point on Windows: frameless Win32 window, Direct3D 11 device and the
+// ImGui loop. main_glfw.cpp is the macOS/Linux one.
+#ifdef _WIN32
+
 #include <windows.h>
 #include <windowsx.h> // GET_X_LPARAM
 #include <d3d11.h>
@@ -467,3 +470,5 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     UnregisterClassW(wc.lpszClassName, instance);
     return 0;
 }
+
+#endif // _WIN32

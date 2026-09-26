@@ -1,4 +1,4 @@
-// Tiny HTTP client built on WinHTTP, with streaming support.
+// Tiny HTTP client with streaming support: WinHTTP on Windows, libcurl elsewhere.
 #pragma once
 
 #include <atomic>

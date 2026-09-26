@@ -1,4 +1,7 @@
+// WinHTTP client for Windows. http_curl.cpp is the macOS/Linux one.
 #include "http.h"
+
+#ifdef _WIN32
 
 #include <windows.h>
 #include <winhttp.h>
@@ -181,3 +184,5 @@ Response request(const std::string& method,
 }
 
 } // namespace http
+
+#endif // _WIN32

@@ -75,11 +75,19 @@ extern FontSet F;
 
 // Applies colors, rounding and spacing. scale is the DPI factor.
 void apply_style(float scale);
-// Loads Segoe UI / Consolas from the system, falling back to the built-in font.
-void load_fonts(float scale);
+// Loads a monospace face from the system, falling back to the built-in font.
+// density: framebuffer pixels per layout unit (2 on a Retina Mac, where the
+// layout is in points), so glyphs are rasterised sharp without growing.
+void load_fonts(float scale, float density = 1.0f);
 
 float scale();
 void set_scale(float s);
+
+// A shortcut, or a sentence mentioning one, as this platform writes it. The
+// source spells them the Windows way; on macOS "Ctrl+" reads "Cmd+" (ImGui
+// maps Command onto Ctrl there) and "Alt+" reads "Option+". Ctrl+Space stays
+// as it is, because Cmd+Space belongs to Spotlight.
+const char* keys(const char* text);
 inline float px(float v) { return v * scale(); }
 
 // ---------------------------------------------------------------- lettering

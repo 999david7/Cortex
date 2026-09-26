@@ -84,7 +84,8 @@ runs on your machine and the model runs on your machine.
 - Serves the current page at `http://127.0.0.1:5500/...` and opens the browser on
   it; any other kind of file opens the site root
 - Live reload: a small script is woven into every HTML page the server sends, the
-  folder is watched with `ReadDirectoryChangesW`, and the open tab reloads itself
+  folder is watched (`ReadDirectoryChangesW` on Windows, a light polling scan on
+  macOS and Linux), and the open tab reloads itself
   as soon as a file changes — from the editor or from anywhere else
 - `index.html` resolution per directory, a directory listing where there is none,
   correct MIME types, byte ranges (so `<video>` can seek) and no-store caching so
@@ -100,27 +101,38 @@ runs on your machine and the model runs on your machine.
 - Integrated terminal panel: run build/test commands in the workspace folder,
   output streamed live
 - Dockable, rearrangeable panels; the layout is remembered between sessions
-- Custom frameless window with a native feel (snap, resize, rounded Win11 corners)
+- Custom frameless window with a native feel on Windows (snap, resize, rounded Win11
+  corners); the standard window frame on macOS and Linux
 
 ---
 
 ## Requirements
 
-- Windows 10 or 11, 64-bit
+Runs on **Windows 10/11** and **macOS** (Linux works too).
+
 - [Ollama](https://ollama.com) running locally with at least one model pulled:
   ```bash
   ollama pull qwen2.5-coder
   ```
-- A C++17 compiler: [w64devkit](https://github.com/skeeto/w64devkit/releases)
+- **Windows:** a C++17 compiler — [w64devkit](https://github.com/skeeto/w64devkit/releases)
   extracted to `tools\w64devkit` (so `tools\w64devkit\bin\g++.exe` exists), or any
-  MinGW-w64 `g++` on `PATH`. See [`tools/README.md`](tools/README.md).
+  MinGW-w64 `g++` on `PATH`. See [`tools/README.md`](tools/README.md). Nothing else:
+  the rest is the Windows SDK (Direct3D 11, WinHTTP, DWM, COM).
+- **macOS:** the Xcode Command Line Tools (`xcode-select --install`) and GLFW from
+  [Homebrew](https://brew.sh): `brew install glfw`. OpenGL, AppKit and libcurl ship
+  with macOS.
+- **Linux:** a C++17 compiler plus the GLFW 3.3+, libcurl and OpenGL development
+  packages (on Debian/Ubuntu: `sudo apt install libglfw3-dev libcurl4-openssl-dev
+  libgl-dev`). File dialogs use `zenity` or `kdialog`.
 
-No other dependencies. Dear ImGui is vendored in `vendor/imgui`; everything else is
-the Windows SDK (Direct3D 11, WinHTTP, DWM, COM).
+Dear ImGui is vendored in `vendor/imgui`, including the backends for both
+platforms.
 
 ---
 
 ## Build
+
+**Windows**
 
 ```bash
 build.bat
@@ -130,7 +142,18 @@ That puts the local toolchain on `PATH` and runs `make`. The result is
 `build\AI-IDE.exe`, a single self-contained executable (statically linked runtime, so
 it also runs on machines without a compiler installed).
 
-Other targets:
+**macOS / Linux**
+
+```bash
+make
+```
+
+The result is `build/AI-IDE`. On macOS, `make app` also wraps it in
+`build/AI-IDE.app`, which can be dragged into `/Applications` and opened from
+Finder or the Dock. (The bundle links Homebrew's GLFW, so it runs on Macs that
+have it installed.)
+
+Other targets, on every platform:
 
 ```bash
 make DEBUG=1
@@ -140,38 +163,49 @@ make DEBUG=1
 make clean
 ```
 
-> If the link step fails with a permission error, the IDE is still running — close it first.
+> If the link step fails with a permission error on Windows, the IDE is still running — close it first.
 
 ---
 
 ## Run
 
 ```bash
-build\AI-IDE.exe
+build\AI-IDE.exe          # Windows
+./build/AI-IDE            # macOS / Linux
+open build/AI-IDE.app     # macOS, after make app
 ```
 
 A file or folder can be passed as an argument:
 
 ```bash
 build\AI-IDE.exe src\app.cpp
+./build/AI-IDE src/app.cpp
 ```
 
-The window renders through Direct3D, so no external screen grabber can capture
-it. `--screenshot <path> [frames]` renders that many frames, writes the back
-buffer to a BMP and exits:
+`--screenshot <path> [frames]` renders that many frames, writes the back buffer
+to a BMP and exits (on Windows the window renders through Direct3D, so no
+external screen grabber can capture it):
 
 ```bash
 build\AI-IDE.exe --screenshot shot.bmp 90
 ```
 
-On first start, open a folder (`Ctrl+K`) and pick a model in the AI panel. If Ollama is
-running, the status dot next to the model name is green and the model list fills itself.
+On first start, open a folder (`Ctrl+K`, `Cmd+K` on a Mac) and pick a model in the
+AI panel. If Ollama is running, the status dot next to the model name is green and
+the model list fills itself.
 
 `examples\demo.cpp` is a small playground file for trying the AI features.
 
 ---
 
 ## Keyboard shortcuts
+
+On macOS, read `Cmd` for `Ctrl` and `Option` for `Alt` (the menus already show them
+that way), and `Cmd+Shift+Z` redoes. The exception is AI completion, which stays on
+`Ctrl+Space` because `Cmd+Space` belongs to Spotlight. Text navigation follows the
+Mac too: `Option+Left/Right` by word, `Cmd+Left/Right` to the ends of the line,
+`Cmd+Up/Down` to the ends of the file, `Option+Delete` / `Cmd+Delete` to erase a
+word / the rest of the line.
 
 | Keys | Action |
 | --- | --- |
@@ -199,7 +233,8 @@ Everything is configurable from **File → Settings**: Ollama host, chat model,
 a separate completion model, temperature, top-p, context window, how much code is
 attached to a message, the system prompt, and the editor preferences.
 
-Configuration lives in `%APPDATA%\AI IDE\`:
+Configuration lives in `%APPDATA%\AI IDE\` on Windows,
+`~/Library/Application Support/AI IDE/` on macOS and `~/.config/ai-ide/` on Linux:
 
 - `settings.json` — preferences, recent folders, selected models
 - `layout.ini` — panel layout
@@ -215,17 +250,21 @@ Pointing `ollama_host` at another machine works too (for example
 
 | File | Purpose |
 | --- | --- |
-| `src/main.cpp` | Win32 frameless window, Direct3D 11 device, frame loop |
+| `src/main.cpp` | Windows: Win32 frameless window, Direct3D 11 device, frame loop |
+| `src/main_glfw.cpp` | macOS/Linux: GLFW window, OpenGL 3 context, frame loop |
 | `src/app.cpp/.h` | The IDE: layout, explorer, tabs, chat, terminal, settings |
 | `src/texteditor.cpp/.h` | The code editor widget and the syntax tokenizer |
 | `src/lang.cpp/.h` | Language registry: detection, keywords, badges, colors |
 | `src/agenttext.cpp/.h` | Recovering tool calls from reply text; edit_file matching |
 | `src/ui.cpp/.h` | Palette, fonts, hand-drawn vector icons, shared widgets |
 | `src/ollama.cpp/.h` | Ollama client — model list, streaming chat and completion |
-| `src/http.cpp/.h` | Minimal WinHTTP client with streaming callbacks |
+| `src/http.cpp/.h` | Minimal HTTP client with streaming callbacks (WinHTTP) |
+| `src/http_curl.cpp` | The same client on macOS/Linux, over libcurl |
 | `src/webserver.cpp/.h` | Local live-preview HTTP server |
 | `src/json.cpp/.h` | Small JSON parser/writer |
-| `src/sys.cpp/.h` | Files, native dialogs, child processes |
+| `src/sys.cpp/.h` | Files, native dialogs, child processes (Windows) |
+| `src/sys_posix.cpp` | The same for macOS/Linux; child processes run in your login shell |
+| `src/sys_mac.mm` | macOS open/save/folder panels (NSOpenPanel, NSSavePanel) |
 
 Requests run on background threads and hand results to the UI through a mutex-guarded
 snapshot, so streaming never blocks the frame loop.
@@ -234,14 +273,19 @@ snapshot, so streaming never blocks the frame loop.
 
 ## Notes and limitations
 
-- Windows only. The editor, UI and AI layers are portable C++; the window creation,
-  file dialogs, process handling and HTTP client are Windows-specific and would each
-  need a counterpart on other platforms.
+- The editor, UI and AI layers are portable C++. Window creation, file dialogs,
+  process handling, the HTTP client and the folder watcher each have a Windows
+  implementation and a macOS/Linux one.
+- On macOS and Linux, terminal commands run through your login shell (`$SHELL -l -c`),
+  so tools installed with Homebrew, npm or pyenv are on `PATH` even when the app
+  was started from Finder or the Dock.
 - The font atlas covers Latin-1, Latin Extended-A and common punctuation. Files with
   CJK or other scripts will show placeholder glyphs.
 - Every font in the UI is monospace, picked from SF Mono, Cascadia Mono,
-  JetBrains Mono, Fira Code, IBM Plex Mono or Consolas, in that order. Only
-  Consolas ships with Windows, so installing one of the others is the easiest way
+  JetBrains Mono, Fira Code, IBM Plex Mono or Consolas, in that order (on macOS SF
+  Mono comes from Terminal.app, with Menlo as the fallback; on Linux DejaVu Sans
+  Mono is the usual fallback). Only Consolas ships with Windows, so installing one
+  of the others is the easiest way
   to change the whole look. A proportional face is used only if no mono is found.
 - A model has to fit in memory before it can answer. If a reply fails instantly
   with an allocation error, the model is too large for the machine or the context
@@ -259,4 +303,3 @@ snapshot, so streaming never blocks the frame loop.
 - Inline completion is deliberately conservative: it asks the model for a short
   continuation and shows it as ghost text; nothing is inserted until you press `Tab`.
 - Files larger than 64 MB are refused by the editor.
->>>>>>> 31dc400 (Initial commit of the local Ollama Windows IDE.)

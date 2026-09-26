@@ -127,8 +127,11 @@ struct ChatMessage {
     bool expect_followup = true;
 };
 
-// Callbacks into the Win32 layer for the custom title bar.
+// Callbacks into the platform layer for the custom title bar.
 struct WindowHooks {
+    // The OS draws the frame and the window buttons (macOS, Linux); the title
+    // bar then leaves out its own minimise/maximise/close.
+    bool native_frame = false;
     std::function<void()> minimize;
     std::function<void()> toggle_maximize;
     std::function<void()> close;

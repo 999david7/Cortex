@@ -1,9 +1,25 @@
 #include "webserver.h"
 
+#ifdef _WIN32
 // Winsock has to come before windows.h, or windows.h pulls in the 1.1 headers.
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#else
+#include <arpa/inet.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <chrono>
+#include <climits>
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -11,6 +27,13 @@
 #include <cstring>
 
 #include "sys.h"
+
+#ifndef _WIN32
+// The Winsock names, so the protocol code below reads the same on every platform.
+using SOCKET = int;
+constexpr SOCKET INVALID_SOCKET = -1;
+inline int closesocket(SOCKET s) { return ::close(s); }
+#endif
 
 namespace web {
 
@@ -135,7 +158,11 @@ bool send_all(SOCKET s, const char* data, size_t len) {
     size_t sent = 0;
     while (sent < len) {
         const int chunk = (int)std::min<size_t>(len - sent, 1 << 20);
-        const int n = ::send(s, data + sent, chunk, 0);
+#if defined(MSG_NOSIGNAL)
+        const int n = (int)::send(s, data + sent, chunk, MSG_NOSIGNAL);
+#else
+        const int n = (int)::send(s, data + sent, chunk, 0); // SO_NOSIGPIPE is set on macOS
+#endif
         if (n <= 0) return false;
         sent += (size_t)n;
     }
@@ -205,48 +232,202 @@ std::string page(const std::string& title, const std::string& body) {
            "</style></head><body>" + body + "</body></html>";
 }
 
-bool ends_with_w(const std::wstring& s, const wchar_t* suffix) {
-    const size_t n = wcslen(suffix);
-    return s.size() >= n && s.compare(s.size() - n, n, suffix) == 0;
-}
+// ------------------------------------------------------------ native paths
 
-std::wstring lower_w(std::wstring s) {
-    for (wchar_t& c : s)
-        if (c >= L'A' && c <= L'Z') c = (wchar_t)(c - L'A' + L'a');
+#ifdef _WIN32
+constexpr wchar_t kSep = L'\\';
+NativePath to_native(const std::string& utf8) { return sys::widen(utf8); }
+std::string from_native(const NativePath& p) { return sys::narrow(p); }
+#else
+constexpr char kSep = '/';
+NativePath to_native(const std::string& utf8) { return utf8; }
+std::string from_native(const NativePath& p) { return p; }
+#endif
+
+// The key two paths are compared on. NTFS and a default-formatted APFS fold
+// case, so a URL typed in the wrong case still names the same file there.
+NativePath fold_case(NativePath s) {
+#if defined(_WIN32) || defined(__APPLE__)
+    for (auto& c : s)
+        if (c >= 'A' && c <= 'Z') c = (NativePath::value_type)(c - 'A' + 'a');
+#endif
     return s;
 }
 
-// Windows file helpers, used directly so paths stay wide end to end.
-bool attrs_of(const std::wstring& path, DWORD& out) {
+// Absolute and canonical. On Windows ".." and "." are folded lexically; on
+// macOS and Linux symlinks are resolved too, so a link cannot point the server
+// out of the folder. The POSIX form requires the path to exist.
+bool full_path(const NativePath& in, NativePath& out) {
+#ifdef _WIN32
+    wchar_t full[MAX_PATH * 4];
+    const DWORD n = GetFullPathNameW(in.c_str(), (DWORD)(sizeof(full) / sizeof(full[0])), full,
+                                     nullptr);
+    if (n == 0 || n >= sizeof(full) / sizeof(full[0])) return false;
+    out = full;
+    return true;
+#else
+    char full[PATH_MAX];
+    if (!realpath(in.c_str(), full)) return false;
+    out = full;
+    return true;
+#endif
+}
+
+bool path_kind(const NativePath& path, bool& is_dir) {
+#ifdef _WIN32
     const DWORD a = GetFileAttributesW(path.c_str());
     if (a == INVALID_FILE_ATTRIBUTES) return false;
-    out = a;
+    is_dir = (a & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    return true;
+#else
+    struct stat st {};
+    if (::stat(path.c_str(), &st) != 0) return false;
+    is_dir = S_ISDIR(st.st_mode);
+    return true;
+#endif
+}
+
+// A file opened for reading, closed when it goes out of scope.
+class InFile {
+public:
+    InFile() = default;
+    InFile(const InFile&) = delete;
+    InFile& operator=(const InFile&) = delete;
+    ~InFile() { close(); }
+
+    bool open(const NativePath& path) {
+#ifdef _WIN32
+        h_ = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        return h_ != INVALID_HANDLE_VALUE;
+#else
+        fd_ = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        return fd_ >= 0;
+#endif
+    }
+
+    long long size() const {
+#ifdef _WIN32
+        LARGE_INTEGER v{};
+        return GetFileSizeEx(h_, &v) ? (long long)v.QuadPart : -1;
+#else
+        struct stat st {};
+        return fstat(fd_, &st) == 0 ? (long long)st.st_size : -1;
+#endif
+    }
+
+    bool seek(long long offset) {
+#ifdef _WIN32
+        LARGE_INTEGER v{};
+        v.QuadPart = offset;
+        return SetFilePointerEx(h_, v, nullptr, FILE_BEGIN) != 0;
+#else
+        return lseek(fd_, (off_t)offset, SEEK_SET) >= 0;
+#endif
+    }
+
+    // Bytes read, 0 at the end or on an error.
+    size_t read(char* buf, size_t want) {
+#ifdef _WIN32
+        DWORD got = 0;
+        if (!ReadFile(h_, buf, (DWORD)std::min<size_t>(want, 1u << 30), &got, nullptr)) return 0;
+        return got;
+#else
+        for (;;) {
+            const ssize_t n = ::read(fd_, buf, want);
+            if (n < 0 && errno == EINTR) continue;
+            return n > 0 ? (size_t)n : 0;
+        }
+#endif
+    }
+
+    void close() {
+#ifdef _WIN32
+        if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_);
+        h_ = INVALID_HANDLE_VALUE;
+#else
+        if (fd_ >= 0) ::close(fd_);
+        fd_ = -1;
+#endif
+    }
+
+private:
+#ifdef _WIN32
+    HANDLE h_ = INVALID_HANDLE_VALUE;
+#else
+    int fd_ = -1;
+#endif
+};
+
+bool read_whole_file(const NativePath& path, std::string& out) {
+    InFile f;
+    if (!f.open(path)) return false;
+    const long long size = f.size();
+    if (size < 0 || size > (long long)64 * 1024 * 1024) return false;
+    out.resize((size_t)size);
+    size_t done = 0;
+    while (done < out.size()) {
+        const size_t got = f.read(&out[done], std::min<size_t>(out.size() - done, 1 << 20));
+        if (got == 0) return false;
+        done += got;
+    }
     return true;
 }
 
-bool read_whole_file(const std::wstring& path, std::string& out) {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    LARGE_INTEGER size{};
-    if (!GetFileSizeEx(h, &size) || size.QuadPart > (LONGLONG)64 * 1024 * 1024) {
-        CloseHandle(h);
-        return false;
-    }
-    out.resize((size_t)size.QuadPart);
-    size_t done = 0;
-    while (done < out.size()) {
-        DWORD got = 0;
-        const DWORD want = (DWORD)std::min<size_t>(out.size() - done, 1 << 20);
-        if (!ReadFile(h, &out[done], want, &got, nullptr) || got == 0) {
-            CloseHandle(h);
-            return false;
-        }
-        done += got;
-    }
-    CloseHandle(h);
-    return true;
+// Editors write temporaries next to the real file, and a package manager
+// churning through node_modules would reload the page all day. Neither is a
+// change to the site. `rel` is a path relative to the root.
+bool is_noisy_change(std::string rel) {
+    rel = to_lower(rel);
+    std::replace(rel.begin(), rel.end(), '\\', '/');
+    auto ends = [&](const char* suffix) {
+        const size_t n = std::strlen(suffix);
+        return rel.size() >= n && rel.compare(rel.size() - n, n, suffix) == 0;
+    };
+    return rel.compare(0, 5, ".git/") == 0 || rel.find("/.git/") != std::string::npos ||
+           rel.find("node_modules") != std::string::npos || rel.find('~') != std::string::npos ||
+           ends(".tmp") || ends(".swp") || ends(".crswap") || ends(".ds_store");
 }
+
+#ifndef _WIN32
+// One number that changes whenever anything in the tree does: every entry's
+// path, size and modification time folded together. The sum does not depend
+// on the order readdir hands entries back in.
+unsigned long long tree_signature(const std::string& root, const std::string& rel,
+                                  size_t& budget) {
+    unsigned long long sig = 0;
+    const std::string dir_path = rel.empty() ? root : root + "/" + rel;
+    DIR* dir = ::opendir(dir_path.c_str());
+    if (!dir) return 0;
+    while (dirent* ent = ::readdir(dir)) {
+        if (budget == 0) break;
+        const std::string name = ent->d_name;
+        if (name == "." || name == ".." || name == ".git" || name == "node_modules") continue;
+        const std::string child_rel = rel.empty() ? name : rel + "/" + name;
+        if (is_noisy_change(child_rel)) continue;
+
+        struct stat st {};
+        if (::lstat((root + "/" + child_rel).c_str(), &st) != 0) continue;
+        --budget;
+
+        unsigned long long h = 1469598103934665603ull; // FNV-1a over the path
+        for (char c : child_rel) h = (h ^ (unsigned char)c) * 1099511628211ull;
+#ifdef __APPLE__
+        const long long mtime_ns = (long long)st.st_mtimespec.tv_sec * 1000000000ll +
+                                   st.st_mtimespec.tv_nsec;
+#else
+        const long long mtime_ns = (long long)st.st_mtim.tv_sec * 1000000000ll + st.st_mtim.tv_nsec;
+#endif
+        h ^= (unsigned long long)mtime_ns * 0x9E3779B97F4A7C15ull;
+        h ^= (unsigned long long)st.st_size * 0xC2B2AE3D27D4EB4Full;
+        sig += h;
+
+        if (S_ISDIR(st.st_mode)) sig += tree_signature(root, child_rel, budget);
+    }
+    ::closedir(dir);
+    return sig;
+}
+#endif
 
 } // namespace
 
@@ -269,16 +450,13 @@ std::string LiveServer::url_for(const std::string& absolute_path) const {
     if (absolute_path.empty()) return base + "/";
 
     // The file has to sit inside the root for the server to be able to reach it.
-    wchar_t full[MAX_PATH * 4];
-    const DWORD n = GetFullPathNameW(sys::widen(absolute_path).c_str(),
-                                     (DWORD)(sizeof(full) / sizeof(full[0])), full, nullptr);
-    if (n == 0 || n >= sizeof(full) / sizeof(full[0])) return base + "/";
+    NativePath file;
+    if (!full_path(to_native(absolute_path), file)) file = to_native(sys::normalize(absolute_path));
 
-    const std::wstring file = full;
-    const std::wstring lf = lower_w(file), lr = lower_w(root_w_);
+    const NativePath lf = fold_case(file), lr = fold_case(root_native_);
     if (lf.size() < lr.size() || lf.compare(0, lr.size(), lr) != 0) return base + "/";
 
-    std::string rel = sys::narrow(file.substr(lr.size()));
+    std::string rel = from_native(file.substr(lr.size()));
     std::replace(rel.begin(), rel.end(), '\\', '/');
     return base + "/" + url_encode_path(rel);
 }
@@ -303,29 +481,36 @@ bool LiveServer::start(const std::string& root, int port, std::string& err) {
         err = "Open a folder first — the server needs something to serve.";
         return false;
     }
-    wchar_t full[MAX_PATH * 4];
-    const DWORD n = GetFullPathNameW(sys::widen(root).c_str(),
-                                     (DWORD)(sizeof(full) / sizeof(full[0])), full, nullptr);
-    if (n == 0 || n >= sizeof(full) / sizeof(full[0])) {
-        err = "That folder path could not be resolved.";
+    NativePath full;
+    bool root_is_dir = false;
+    if (!full_path(to_native(root), full)) {
+        err = sys::is_directory(root) ? "That folder path could not be resolved."
+                                      : "That folder does not exist.";
         return false;
     }
-    DWORD attrs = 0;
-    if (!attrs_of(full, attrs) || !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+    if (!path_kind(full, root_is_dir) || !root_is_dir) {
         err = "That folder does not exist.";
         return false;
     }
 
-    root_w_ = full;
-    if (root_w_.empty() || root_w_.back() != L'\\') root_w_ += L'\\';
-    root_ = sys::narrow(root_w_.substr(0, root_w_.size() - 1));
+    root_native_ = full;
+    if (root_native_.empty() || root_native_.back() != kSep) root_native_ += kSep;
+#ifdef _WIN32
+    root_ = from_native(root_native_.substr(0, root_native_.size() - 1));
+#else
+    // Shown as opened: realpath would turn /tmp into /private/tmp on macOS
+    // and make the folder look like a different one to the rest of the app.
+    root_ = sys::normalize(root);
+#endif
 
+#ifdef _WIN32
     WSADATA wsa{};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         err = "Windows sockets could not be started.";
         return false;
     }
     wsa_started_ = true;
+#endif
 
     // Loopback only: this is a preview for the machine it runs on, not a way to
     // put the folder on the network.
@@ -335,13 +520,21 @@ bool LiveServer::start(const std::string& root, int port, std::string& err) {
     for (int p = port; p <= port + 20; ++p) {
         listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (listener == INVALID_SOCKET) break;
+#ifndef _WIN32
+        // Here, unlike on Windows, SO_REUSEADDR never lets two programs share a
+        // listening port; it only lets a restarted server take its port back
+        // while the last connections are still in TIME_WAIT.
+        int one = 1;
+        setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        fcntl(listener, F_SETFD, FD_CLOEXEC);
+#endif
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
-        addr.sin_port = htons((u_short)p);
+        addr.sin_port = htons((unsigned short)p);
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        // SO_REUSEADDR is deliberately not set: on Windows it lets a second
-        // program bind a port that is already in use, and silently sharing the
-        // port with something else is worse than moving to the next one.
+        // SO_REUSEADDR is deliberately not set on Windows: there it lets a
+        // second program bind a port that is already in use, and silently
+        // sharing the port with something else is worse than moving on.
         if (bind(listener, (const sockaddr*)&addr, sizeof(addr)) == 0 &&
             listen(listener, SOMAXCONN) == 0) {
             chosen = p;
@@ -354,8 +547,10 @@ bool LiveServer::start(const std::string& root, int port, std::string& err) {
         char buf[160];
         std::snprintf(buf, sizeof(buf), "Ports %d-%d are all in use.", port, port + 20);
         err = buf;
+#ifdef _WIN32
         WSACleanup();
         wsa_started_ = false;
+#endif
         return false;
     }
 
@@ -366,7 +561,9 @@ bool LiveServer::start(const std::string& root, int port, std::string& err) {
     served_.store(0);
     token_.fetch_add(1);
 
+#ifdef _WIN32
     stop_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+#endif
 
     workers_.reserve(kWorkerThreads);
     for (int i = 0; i < kWorkerThreads; ++i)
@@ -383,22 +580,36 @@ bool LiveServer::start(const std::string& root, int port, std::string& err) {
 void LiveServer::stop() {
     if (!running_.load() && !stopping_.load() && !acceptor_.joinable()) {
         // Never started, or already fully stopped.
+#ifdef _WIN32
         if (wsa_started_) {
             WSACleanup();
             wsa_started_ = false;
         }
+#endif
         return;
     }
 
-    stopping_.store(true);
+    {
+        std::lock_guard<std::mutex> lock(watch_mu_);
+        stopping_.store(true);
+    }
 
+#ifdef _WIN32
     // Closing the listening socket is what makes the blocked accept() return.
     const uintptr_t listener = listen_.exchange((uintptr_t)-1);
     if (listener != (uintptr_t)-1) closesocket((SOCKET)listener);
     if (stop_event_) SetEvent((HANDLE)stop_event_);
+#endif
+    watch_cv_.notify_all();
     queue_cv_.notify_all();
 
     if (acceptor_.joinable()) acceptor_.join();
+#ifndef _WIN32
+    // Closing a socket another thread is blocked on does not wake it here, so
+    // the acceptor polls; the socket is closed only once it has let go.
+    const uintptr_t listener = listen_.exchange((uintptr_t)-1);
+    if (listener != (uintptr_t)-1) closesocket((SOCKET)listener);
+#endif
     for (std::thread& t : workers_)
         if (t.joinable()) t.join();
     workers_.clear();
@@ -412,6 +623,7 @@ void LiveServer::stop() {
         }
     }
 
+#ifdef _WIN32
     if (stop_event_) {
         CloseHandle((HANDLE)stop_event_);
         stop_event_ = nullptr;
@@ -420,6 +632,7 @@ void LiveServer::stop() {
         WSACleanup();
         wsa_started_ = false;
     }
+#endif
 
     const bool was_running = running_.exchange(false);
     stopping_.store(false);
@@ -434,17 +647,42 @@ void LiveServer::accept_loop() {
         const uintptr_t listener = listen_.load();
         if (listener == (uintptr_t)-1) break;
 
+#ifndef _WIN32
+        pollfd pfd{};
+        pfd.fd = (SOCKET)listener;
+        pfd.events = POLLIN;
+        const int ready = ::poll(&pfd, 1, 200);
+        if (ready == 0 || (ready < 0 && errno == EINTR)) continue;
+        if (ready < 0) break;
+#endif
+
         sockaddr_in from{};
-        int from_len = sizeof(from);
+        socklen_t from_len = sizeof(from);
         const SOCKET client = accept((SOCKET)listener, (sockaddr*)&from, &from_len);
         if (client == INVALID_SOCKET) {
             if (stopping_.load()) break;
             // stop() closes the listener, which is the only fatal case; a client
             // that vanished mid-handshake just means "try the next one".
+#ifdef _WIN32
             const int e = WSAGetLastError();
             if (e == WSAECONNRESET || e == WSAEINTR || e == WSAEMFILE || e == WSAENOBUFS) continue;
+#else
+            const int e = errno;
+            if (e == ECONNABORTED || e == EINTR || e == EAGAIN || e == EMFILE || e == ENFILE ||
+                e == ENOBUFS || e == ENOMEM)
+                continue;
+#endif
             break;
         }
+#ifndef _WIN32
+        fcntl(client, F_SETFD, FD_CLOEXEC);
+#ifdef SO_NOSIGPIPE
+        // macOS has no MSG_NOSIGNAL: a browser closing the tab mid-transfer
+        // would otherwise kill the whole IDE with SIGPIPE.
+        int one = 1;
+        setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
+#endif
 
         {
             std::lock_guard<std::mutex> lock(queue_mu_);
@@ -478,8 +716,10 @@ void LiveServer::worker_loop() {
     }
 }
 
+#ifdef _WIN32
+
 void LiveServer::watch_loop() {
-    HANDLE dir = CreateFileW(root_w_.c_str(), FILE_LIST_DIRECTORY,
+    HANDLE dir = CreateFileW(root_native_.c_str(), FILE_LIST_DIRECTORY,
                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                              OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
                              nullptr);
@@ -515,17 +755,7 @@ void LiveServer::watch_loop() {
         for (size_t offset = 0; offset + sizeof(FILE_NOTIFY_INFORMATION) <= got;) {
             const auto* info = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(buf.data() + offset);
             const std::wstring name(info->FileName, info->FileNameLength / sizeof(wchar_t));
-            const std::wstring lower = lower_w(name);
-
-            // Editors write temporaries next to the real file, and a package
-            // manager churning through node_modules would reload the page all
-            // day. Neither is a change to the site.
-            const bool noisy = lower.find(L".git\\") != std::wstring::npos ||
-                               lower.find(L"node_modules") != std::wstring::npos ||
-                               lower.find(L'~') != std::wstring::npos ||
-                               ends_with_w(lower, L".tmp") || ends_with_w(lower, L".swp") ||
-                               ends_with_w(lower, L".crswap");
-            if (!noisy) relevant = true;
+            if (!is_noisy_change(sys::narrow(name))) relevant = true;
 
             if (info->NextEntryOffset == 0) break;
             offset += info->NextEntryOffset;
@@ -541,9 +771,40 @@ void LiveServer::watch_loop() {
     CloseHandle(dir);
 }
 
+#else
+
+void LiveServer::watch_loop() {
+    // There is no one call on both macOS and Linux that reports changes under
+    // a whole tree, so the tree is fingerprinted a few times a second instead.
+    // The cap keeps a huge folder from turning this into a busy loop; saves
+    // from the editor reload the page immediately through notify_changed().
+    std::string root = root_native_;
+    if (root.size() > 1) root.pop_back(); // the trailing separator
+    constexpr size_t kMaxEntries = 20000;
+    size_t budget = kMaxEntries;
+    unsigned long long last = tree_signature(root, "", budget);
+    if (budget == 0) log("the folder is very large; only part of it is watched for changes");
+
+    std::unique_lock<std::mutex> lock(watch_mu_);
+    while (!stopping_.load()) {
+        watch_cv_.wait_for(lock, std::chrono::milliseconds(400), [this] { return stopping_.load(); });
+        if (stopping_.load()) break;
+        lock.unlock();
+        budget = kMaxEntries;
+        const unsigned long long now = tree_signature(root, "", budget);
+        if (now != last) {
+            last = now;
+            token_.fetch_add(1);
+        }
+        lock.lock();
+    }
+}
+
+#endif
+
 // ------------------------------------------------------------------ serving
 
-bool LiveServer::resolve(const std::string& url_path, std::wstring& out_file, bool& is_dir) const {
+bool LiveServer::resolve(const std::string& url_path, NativePath& out_file, bool& is_dir) const {
     std::string rel = url_decode(url_path);
     if (rel.empty() || rel[0] != '/') return false;
     rel.erase(0, 1);
@@ -563,25 +824,20 @@ bool LiveServer::resolve(const std::string& url_path, std::wstring& out_file, bo
         start = slash + 1;
     }
 
-    std::wstring candidate = root_w_ + sys::widen(rel);
-    std::replace(candidate.begin(), candidate.end(), L'/', L'\\');
+    NativePath candidate = root_native_ + to_native(rel);
+    std::replace(candidate.begin(), candidate.end(), (NativePath::value_type)'/', kSep);
 
-    wchar_t full[MAX_PATH * 4];
-    const DWORD n = GetFullPathNameW(candidate.c_str(),
-                                     (DWORD)(sizeof(full) / sizeof(full[0])), full, nullptr);
-    if (n == 0 || n >= sizeof(full) / sizeof(full[0])) return false;
+    NativePath resolved;
+    if (!full_path(candidate, resolved)) return false;
 
     // The canonical path must still start with the canonical root: this is the
     // check that actually keeps the server inside the folder.
-    const std::wstring resolved = full;
-    const std::wstring lr = lower_w(root_w_), lf = lower_w(resolved);
-    const std::wstring root_no_slash = lr.substr(0, lr.size() - 1);
+    const NativePath lr = fold_case(root_native_), lf = fold_case(resolved);
+    const NativePath root_no_slash = lr.substr(0, lr.size() - 1);
     if (lf != root_no_slash && (lf.size() < lr.size() || lf.compare(0, lr.size(), lr) != 0))
         return false;
 
-    DWORD attrs = 0;
-    if (!attrs_of(resolved, attrs)) return false;
-    is_dir = (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    if (!path_kind(resolved, is_dir)) return false;
     out_file = resolved;
     return true;
 }
@@ -589,7 +845,12 @@ bool LiveServer::resolve(const std::string& url_path, std::wstring& out_file, bo
 void LiveServer::serve(uintptr_t raw) {
     const SOCKET s = (SOCKET)raw;
 
+#ifdef _WIN32
     DWORD timeout = 5000;
+#else
+    timeval timeout{};
+    timeout.tv_sec = 5;
+#endif
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
     setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
 
@@ -598,7 +859,7 @@ void LiveServer::serve(uintptr_t raw) {
     size_t head_end = std::string::npos;
     char chunk[4096];
     while (head.size() < kMaxRequestBytes) {
-        const int n = recv(s, chunk, (int)sizeof(chunk), 0);
+        const int n = (int)recv(s, chunk, sizeof(chunk), 0);
         if (n <= 0) break;
         head.append(chunk, (size_t)n);
         head_end = head.find("\r\n\r\n");
@@ -638,7 +899,7 @@ void LiveServer::serve(uintptr_t raw) {
     served_.fetch_add(1);
 
     // --- map onto a file ---
-    std::wstring file;
+    NativePath file;
     bool is_dir = false;
     if (!resolve(target, file, is_dir)) {
         log("404  " + target);
@@ -659,7 +920,7 @@ void LiveServer::serve(uintptr_t raw) {
             return;
         }
 
-        std::wstring index;
+        NativePath index;
         bool index_is_dir = false;
         if (resolve(target + "index.html", index, index_is_dir) && !index_is_dir) {
             file = index;
@@ -673,7 +934,7 @@ void LiveServer::serve(uintptr_t raw) {
     if (is_dir) {
         // No index: list what is there, which is far more useful than a 403.
         std::vector<sys::DirEntry> entries;
-        sys::list_directory(sys::narrow(file), entries);
+        sys::list_directory(from_native(file), entries);
 
         // Landing on a listing instead of a site almost always means the pages
         // are one folder further in, so say which folder rather than making the
@@ -681,9 +942,13 @@ void LiveServer::serve(uintptr_t raw) {
         std::string elsewhere;
         for (const sys::DirEntry& e : entries) {
             if (!e.is_dir) continue;
-            DWORD sub = 0;
-            const std::wstring candidate = file + L"\\" + sys::widen(e.name) + L"\\index.html";
-            if (attrs_of(candidate, sub) && !(sub & FILE_ATTRIBUTE_DIRECTORY)) {
+            bool sub_is_dir = false;
+            NativePath candidate = file;
+            if (candidate.empty() || candidate.back() != kSep) candidate += kSep;
+            candidate += to_native(e.name);
+            candidate += kSep;
+            candidate += to_native("index.html");
+            if (path_kind(candidate, sub_is_dir) && !sub_is_dir) {
                 if (!elsewhere.empty()) elsewhere += ", ";
                 elsewhere += "<a href=\"" + url_encode_path(e.name) + "/\">" +
                              html_escape(e.name) + "/</a>";
@@ -709,7 +974,7 @@ void LiveServer::serve(uintptr_t raw) {
         return;
     }
 
-    const std::string path_utf8 = sys::narrow(file);
+    const std::string path_utf8 = from_native(file);
 
     // --- HTML: read it whole so the reload script can be woven in ---
     if (is_html(path_utf8)) {
@@ -745,26 +1010,20 @@ void LiveServer::serve(uintptr_t raw) {
     }
 
     // --- everything else is streamed, so a large video costs no memory ---
-    HANDLE h = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) {
-        send_simple(s, 403, "text/plain; charset=utf-8", "That file could not be read.", head_only);
-        return;
-    }
-    LARGE_INTEGER file_size{};
-    if (!GetFileSizeEx(h, &file_size)) {
-        CloseHandle(h);
+    InFile in;
+    const long long total = in.open(file) ? in.size() : -1;
+    if (total < 0) {
         send_simple(s, 403, "text/plain; charset=utf-8", "That file could not be read.", head_only);
         return;
     }
 
-    long long first = 0, last = file_size.QuadPart - 1;
+    long long first = 0, last = total - 1;
     bool partial = false;
 
     // Range requests are what let a <video> seek instead of restarting.
     const std::string lower_head = to_lower(head.substr(0, head_end));
     if (const size_t r = lower_head.find("\r\nrange:"); r != std::string::npos &&
-                                                        file_size.QuadPart > 0) {
+                                                        total > 0) {
         const size_t value = lower_head.find("bytes=", r);
         const size_t eol = lower_head.find("\r\n", r + 2);
         if (value != std::string::npos && value < eol) {
@@ -777,21 +1036,20 @@ void LiveServer::serve(uintptr_t raw) {
                 if (a.empty() && !b.empty()) { // the last N bytes
                     const long long len = atoll(b.c_str());
                     if (len <= 0) ok = false;
-                    else first = std::max<long long>(0, file_size.QuadPart - len);
+                    else first = std::max<long long>(0, total - len);
                 } else if (!a.empty()) {
                     first = atoll(a.c_str());
                     if (!b.empty()) last = atoll(b.c_str());
                 } else {
                     ok = false;
                 }
-                if (ok && first <= last && first < file_size.QuadPart) {
-                    last = std::min<long long>(last, file_size.QuadPart - 1);
+                if (ok && first <= last && first < total) {
+                    last = std::min<long long>(last, total - 1);
                     partial = true;
                 } else {
                     char extra[96];
                     std::snprintf(extra, sizeof(extra), "Content-Range: bytes */%lld\r\n",
-                                  (long long)file_size.QuadPart);
-                    CloseHandle(h);
+                                  total);
                     send_simple(s, 416, "text/plain; charset=utf-8", "", head_only, extra);
                     return;
                 }
@@ -804,29 +1062,24 @@ void LiveServer::serve(uintptr_t raw) {
     if (partial) {
         char buf[128];
         std::snprintf(buf, sizeof(buf), "Content-Range: bytes %lld-%lld/%lld\r\n", first, last,
-                      (long long)file_size.QuadPart);
+                      total);
         extra = buf;
     }
     if (!send_all(s, header_block(partial ? 206 : 200, mime_for(path_utf8), length, extra)) ||
-        head_only) {
-        CloseHandle(h);
+        head_only)
         return;
-    }
 
-    LARGE_INTEGER seek{};
-    seek.QuadPart = first;
-    SetFilePointerEx(h, seek, nullptr, FILE_BEGIN);
+    if (!in.seek(first)) return;
 
     std::vector<char> chunk_buf(kStreamChunk);
     long long remaining = length;
     while (remaining > 0) {
-        const DWORD want = (DWORD)std::min<long long>(remaining, (long long)chunk_buf.size());
-        DWORD got = 0;
-        if (!ReadFile(h, chunk_buf.data(), want, &got, nullptr) || got == 0) break;
+        const size_t want = (size_t)std::min<long long>(remaining, (long long)chunk_buf.size());
+        const size_t got = in.read(chunk_buf.data(), want);
+        if (got == 0) break;
         if (!send_all(s, chunk_buf.data(), got)) break;
-        remaining -= got;
+        remaining -= (long long)got;
     }
-    CloseHandle(h);
 }
 
 } // namespace web

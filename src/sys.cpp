@@ -1,4 +1,7 @@
+// Windows side of the platform layer. sys_posix.cpp is the macOS/Linux one.
 #include "sys.h"
+
+#ifdef _WIN32
 
 #include <windows.h>
 #include <shlwapi.h>
@@ -9,6 +12,11 @@
 #include <cstdio>
 
 namespace sys {
+
+const char kPathSep = '\\';
+
+int path_cmp(const char* a, const char* b) { return _stricmp(a, b); }
+int path_ncmp(const char* a, const char* b, size_t n) { return _strnicmp(a, b, n); }
 
 std::wstring widen(const std::string& s) {
     if (s.empty()) return std::wstring();
@@ -323,6 +331,8 @@ void open_in_explorer(const std::string& path) {
     }
 }
 
+const char* file_manager_name() { return "Explorer"; }
+
 void open_url(const std::string& url) {
     ShellExecuteW(nullptr, L"open", widen(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
@@ -429,3 +439,5 @@ void Process::terminate() {
 }
 
 } // namespace sys
+
+#endif // _WIN32

@@ -1163,15 +1163,40 @@ void TextEditor::handle_keyboard() {
     }
 
     // --- navigation ---
+#ifdef __APPLE__
+    // The macOS conventions: Option moves by word, Command (reported as Ctrl)
+    // jumps to the ends of the line, and vertically to the ends of the file.
+    const bool word_mod = alt;
+    const bool edge_mod = ctrl;
+#else
+    const bool word_mod = ctrl;
+    const bool edge_mod = false;
+#endif
     if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) {
-        move_to(ctrl ? word_start(cursor_)
-                     : (has_selection() && !shift ? sel_start_ : prev_char(cursor_)), shift);
+        if (edge_mod) {
+            const Coord first = line_first_non_space(cursor_.line);
+            move_to(cursor_ == first ? Coord(cursor_.line, 0) : first, shift);
+        } else {
+            move_to(word_mod ? word_start(cursor_)
+                             : (has_selection() && !shift ? sel_start_ : prev_char(cursor_)),
+                    shift);
+        }
         preferred_column_x_ = -1;
         return;
     }
     if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) {
-        move_to(ctrl ? word_end(cursor_)
-                     : (has_selection() && !shift ? sel_end_ : next_char(cursor_)), shift);
+        if (edge_mod)
+            move_to(Coord(cursor_.line, (int)lines_[cursor_.line].size()), shift);
+        else
+            move_to(word_mod ? word_end(cursor_)
+                             : (has_selection() && !shift ? sel_end_ : next_char(cursor_)),
+                    shift);
+        preferred_column_x_ = -1;
+        return;
+    }
+    if (edge_mod && (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true) ||
+                     ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))) {
+        move_to(ImGui::IsKeyPressed(ImGuiKey_UpArrow, true) ? Coord(0, 0) : doc_end(), shift);
         preferred_column_x_ = -1;
         return;
     }
@@ -1225,13 +1250,29 @@ void TextEditor::handle_keyboard() {
         preferred_column_x_ = -1;
         return;
     }
+#ifdef __APPLE__
+    // Option+Delete removes the word before the caret, Command+Delete the
+    // rest of the line before it: select that span, then delete it.
+    if ((alt || ctrl) && !has_selection() && ImGui::IsKeyPressed(ImGuiKey_Backspace, true)) {
+        const Coord from = ctrl ? Coord(cursor_.line, 0) : word_start(cursor_);
+        if (from < cursor_) move_to(from, true);
+        delete_selection_or(-1);
+        preferred_column_x_ = -1;
+        return;
+    }
+#endif
     if (ImGui::IsKeyPressed(ImGuiKey_Backspace, true)) { delete_selection_or(-1); preferred_column_x_ = -1; return; }
     if (ImGui::IsKeyPressed(ImGuiKey_Delete, true)) { delete_selection_or(1); preferred_column_x_ = -1; return; }
 
     // --- text input ---
     if (!io.InputQueueCharacters.empty()) {
         // Ctrl+<key> is a shortcut, not text. AltGr (Ctrl+Alt) still types.
+#ifdef __APPLE__
+        // Command arrives as Ctrl and the Control key as Super; neither types.
+        const bool shortcut_modifier = (ctrl || io.KeySuper) && !alt;
+#else
         const bool shortcut_modifier = ctrl && !alt;
+#endif
         for (int i = 0; i < io.InputQueueCharacters.Size; ++i) {
             unsigned int cp = (unsigned int)io.InputQueueCharacters[i];
             if (cp == 0 || cp == '\t' || cp == '\r' || cp == '\n' || cp == 127) continue;

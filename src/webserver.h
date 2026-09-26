@@ -17,6 +17,14 @@
 
 namespace web {
 
+// Paths stay in the platform's own form inside the server: UTF-16 on Windows,
+// so no file name is lost in a round trip, and plain UTF-8 everywhere else.
+#ifdef _WIN32
+using NativePath = std::wstring;
+#else
+using NativePath = std::string;
+#endif
+
 class LiveServer {
 public:
     LiveServer() = default;
@@ -61,7 +69,7 @@ private:
 
     // Maps a decoded URL path onto a real file, refusing anything that resolves
     // outside the root. Returns false when the path escapes or does not exist.
-    bool resolve(const std::string& url_path, std::wstring& out_file, bool& is_dir) const;
+    bool resolve(const std::string& url_path, NativePath& out_file, bool& is_dir) const;
 
     std::atomic<bool> running_{false};
     std::atomic<bool> stopping_{false};
@@ -71,12 +79,17 @@ private:
     std::atomic<bool> live_reload_{true};
 
     std::string root_;         // as opened, for display
-    std::wstring root_w_;      // canonical, with a trailing backslash
+    NativePath root_native_;   // canonical, with a trailing separator
 
-    // A SOCKET, kept as an integer so this header stays free of <winsock2.h>.
+    // A SOCKET (or a file descriptor), kept as an integer so this header stays
+    // free of <winsock2.h>.
     std::atomic<uintptr_t> listen_{(uintptr_t)-1};
+#ifdef _WIN32
     void* stop_event_ = nullptr; // wakes the directory watcher
     bool wsa_started_ = false;
+#endif
+    std::mutex watch_mu_;        // wakes the polling watcher (macOS, Linux)
+    std::condition_variable watch_cv_;
 
     std::thread acceptor_;
     std::thread watcher_;

@@ -2,7 +2,10 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <map>
+#include <string>
 
 #include "imgui_internal.h"
 
@@ -14,6 +17,35 @@ static float g_scale = 1.0f;
 
 float scale() { return g_scale; }
 void set_scale(float s) { g_scale = s; }
+
+const char* keys(const char* text) {
+#ifdef __APPLE__
+    // Called every frame with the same literals; converted once, then cached.
+    static std::map<std::string, std::string> cache;
+    auto it = cache.find(text);
+    if (it != cache.end()) return it->second.c_str();
+
+    auto replace_all = [](std::string& s, const std::string& from, const std::string& to) {
+        for (size_t at = s.find(from); at != std::string::npos; at = s.find(from, at + to.size()))
+            s.replace(at, from.size(), to);
+    };
+    std::string out = text;
+    // Both spellings: the menus say "Ctrl+S", the lettered labels "ctrl+s".
+    replace_all(out, "Ctrl+Space", "\x01");
+    replace_all(out, "ctrl+space", "\x02");
+    replace_all(out, "Ctrl+Y", "Ctrl+Shift+Z");
+    replace_all(out, "Alt+F4", "Ctrl+Q");
+    replace_all(out, "Ctrl+", "Cmd+");
+    replace_all(out, "ctrl+", "cmd+");
+    replace_all(out, "Alt+", "Option+");
+    replace_all(out, "alt+", "option+");
+    replace_all(out, "\x01", "Ctrl+Space");
+    replace_all(out, "\x02", "ctrl+space");
+    return cache.emplace(text, std::move(out)).first->second.c_str();
+#else
+    return text;
+#endif
+}
 
 static ImU32 rgb(int r, int g, int b, int a = 255) {
     return IM_COL32(r, g, b, a);
@@ -195,60 +227,169 @@ static const ImWchar* build_glyph_ranges() {
     return ranges.Data;
 }
 
+// A font file, and which face in it for a collection (.ttc).
+struct FontFile {
+    const char* path; // "~/" is the home folder
+    int index;
+};
+
 // Picks the first font that exists on this machine. The lists are ordered
 // best-first, so a user who installs a nicer mono gets it automatically.
-static ImFont* load_first(const char* const* candidates, float size,
-                          const ImFontConfig* cfg) {
+static ImFont* load_first(const FontFile* candidates, float size, const ImFontConfig* cfg) {
     ImGuiIO& io = ImGui::GetIO();
-    for (const char* const* p = candidates; *p; ++p) {
+    const char* home = std::getenv("HOME");
+    for (const FontFile* p = candidates; p->path; ++p) {
+        std::string path = p->path;
+        if (path.compare(0, 2, "~/") == 0) {
+            if (!home) continue;
+            path = std::string(home) + path.substr(1);
+        }
         // AddFontFromFileTTF asserts on a missing file in debug builds, so
         // check readability ourselves before handing the path to ImGui.
-        if (FILE* f = fopen(*p, "rb")) {
+        if (FILE* f = fopen(path.c_str(), "rb")) {
             fclose(f);
-            if (ImFont* font = io.Fonts->AddFontFromFileTTF(*p, size, cfg)) return font;
+            ImFontConfig face = *cfg;
+            face.FontNo = p->index;
+            if (ImFont* font = io.Fonts->AddFontFromFileTTF(path.c_str(), size, &face)) return font;
         }
     }
     return nullptr;
 }
 
+#if defined(_WIN32)
+
 // Xcode uses SF Mono, which is Apple-licensed and never present on Windows.
 // These are the close substitutes, in descending order of similarity; Consolas
 // is the guaranteed fallback because it ships with Windows.
-static const char* kMonoFonts[] = {
-    "C:/Windows/Fonts/SFMono-Regular.otf",
-    "C:/Windows/Fonts/SF-Mono-Regular.otf",
-    "C:/Windows/Fonts/CascadiaMono.ttf",
-    "C:/Windows/Fonts/CascadiaCode.ttf",
-    "C:/Windows/Fonts/JetBrainsMono-Regular.ttf",
-    "C:/Windows/Fonts/FiraCode-Regular.ttf",
-    "C:/Windows/Fonts/IBMPlexMono-Regular.ttf",
-    "C:/Windows/Fonts/consola.ttf",
-    "C:/Windows/Fonts/lucon.ttf",
-    nullptr};
+static const FontFile kMonoFonts[] = {
+    {"C:/Windows/Fonts/SFMono-Regular.otf", 0},
+    {"C:/Windows/Fonts/SF-Mono-Regular.otf", 0},
+    {"C:/Windows/Fonts/CascadiaMono.ttf", 0},
+    {"C:/Windows/Fonts/CascadiaCode.ttf", 0},
+    {"C:/Windows/Fonts/JetBrainsMono-Regular.ttf", 0},
+    {"C:/Windows/Fonts/FiraCode-Regular.ttf", 0},
+    {"C:/Windows/Fonts/IBMPlexMono-Regular.ttf", 0},
+    {"C:/Windows/Fonts/consola.ttf", 0},
+    {"C:/Windows/Fonts/lucon.ttf", 0},
+    {nullptr, 0}};
 
-static const char* kMonoBoldFonts[] = {
-    "C:/Windows/Fonts/SFMono-Bold.otf",
-    "C:/Windows/Fonts/CascadiaMono-Bold.ttf",
-    "C:/Windows/Fonts/JetBrainsMono-Bold.ttf",
-    "C:/Windows/Fonts/consolab.ttf",
-    nullptr};
+static const FontFile kMonoBoldFonts[] = {
+    {"C:/Windows/Fonts/SFMono-Bold.otf", 0},
+    {"C:/Windows/Fonts/CascadiaMono-Bold.ttf", 0},
+    {"C:/Windows/Fonts/JetBrainsMono-Bold.ttf", 0},
+    {"C:/Windows/Fonts/consolab.ttf", 0},
+    {nullptr, 0}};
 
-static const char* kUiFonts[] = {
-    "C:/Windows/Fonts/segoeui.ttf",
-    "C:/Windows/Fonts/tahoma.ttf",
-    nullptr};
+static const FontFile kUiFonts[] = {
+    {"C:/Windows/Fonts/segoeui.ttf", 0},
+    {"C:/Windows/Fonts/tahoma.ttf", 0},
+    {nullptr, 0}};
 
-static const char* kUiSemiboldFonts[] = {
-    "C:/Windows/Fonts/seguisb.ttf",
-    "C:/Windows/Fonts/segoeuib.ttf",
-    "C:/Windows/Fonts/tahomabd.ttf",
-    nullptr};
+static const FontFile kUiSemiboldFonts[] = {
+    {"C:/Windows/Fonts/seguisb.ttf", 0},
+    {"C:/Windows/Fonts/segoeuib.ttf", 0},
+    {"C:/Windows/Fonts/tahomabd.ttf", 0},
+    {nullptr, 0}};
 
-void load_fonts(float s) {
+#elif defined(__APPLE__)
+
+// SF Mono itself: Terminal.app carries static copies of it, and a user who
+// installed it from Apple's developer site has it in a Fonts folder. Menlo
+// ships with every macOS and is the guaranteed fallback.
+static const FontFile kMonoFonts[] = {
+    {"~/Library/Fonts/SFMono-Regular.otf", 0},
+    {"/Library/Fonts/SFMono-Regular.otf", 0},
+    {"/System/Applications/Utilities/Terminal.app/Contents/Resources/Fonts/SFMono-Regular.otf", 0},
+    {"/Applications/Utilities/Terminal.app/Contents/Resources/Fonts/SFMono-Regular.otf", 0},
+    {"~/Library/Fonts/CascadiaMono.ttf", 0},
+    {"/Library/Fonts/CascadiaMono.ttf", 0},
+    {"~/Library/Fonts/JetBrainsMono-Regular.ttf", 0},
+    {"/Library/Fonts/JetBrainsMono-Regular.ttf", 0},
+    {"~/Library/Fonts/FiraCode-Regular.ttf", 0},
+    {"/Library/Fonts/FiraCode-Regular.ttf", 0},
+    {"~/Library/Fonts/IBMPlexMono-Regular.ttf", 0},
+    {"/Library/Fonts/IBMPlexMono-Regular.ttf", 0},
+    {"/System/Library/Fonts/Menlo.ttc", 0},
+    {"/System/Library/Fonts/Monaco.ttf", 0},
+    {nullptr, 0}};
+
+static const FontFile kMonoBoldFonts[] = {
+    {"~/Library/Fonts/SFMono-Bold.otf", 0},
+    {"/Library/Fonts/SFMono-Bold.otf", 0},
+    {"/System/Applications/Utilities/Terminal.app/Contents/Resources/Fonts/SFMono-Bold.otf", 0},
+    {"/Applications/Utilities/Terminal.app/Contents/Resources/Fonts/SFMono-Bold.otf", 0},
+    {"~/Library/Fonts/CascadiaMono-Bold.ttf", 0},
+    {"/Library/Fonts/CascadiaMono-Bold.ttf", 0},
+    {"~/Library/Fonts/JetBrainsMono-Bold.ttf", 0},
+    {"/Library/Fonts/JetBrainsMono-Bold.ttf", 0},
+    {"/System/Library/Fonts/Menlo.ttc", 1}, // Regular, Bold, Italic, Bold Italic
+    {nullptr, 0}};
+
+static const FontFile kUiFonts[] = {
+    {"/System/Library/Fonts/Supplemental/Arial.ttf", 0},
+    {"/Library/Fonts/Arial.ttf", 0},
+    {nullptr, 0}};
+
+static const FontFile kUiSemiboldFonts[] = {
+    {"/System/Library/Fonts/Supplemental/Arial Bold.ttf", 0},
+    {"/Library/Fonts/Arial Bold.ttf", 0},
+    {nullptr, 0}};
+
+#else
+
+// Linux: the usual install paths of the same faces, then what distributions
+// ship by default. DejaVu Sans Mono is on nearly every desktop.
+static const FontFile kMonoFonts[] = {
+    {"~/.local/share/fonts/SFMono-Regular.otf", 0},
+    {"~/.local/share/fonts/CascadiaMono.ttf", 0},
+    {"/usr/share/fonts/truetype/cascadia-code/CascadiaMono.ttf", 0},
+    {"~/.local/share/fonts/JetBrainsMono-Regular.ttf", 0},
+    {"/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf", 0},
+    {"/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf", 0},
+    {"~/.local/share/fonts/FiraCode-Regular.ttf", 0},
+    {"/usr/share/fonts/truetype/firacode/FiraCode-Regular.ttf", 0},
+    {"/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf", 0},
+    {"/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 0},
+    {"/usr/share/fonts/TTF/DejaVuSansMono.ttf", 0},
+    {"/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf", 0},
+    {"/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf", 0},
+    {"/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf", 0},
+    {"/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf", 0},
+    {nullptr, 0}};
+
+static const FontFile kMonoBoldFonts[] = {
+    {"~/.local/share/fonts/SFMono-Bold.otf", 0},
+    {"~/.local/share/fonts/CascadiaMono-Bold.ttf", 0},
+    {"~/.local/share/fonts/JetBrainsMono-Bold.ttf", 0},
+    {"/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Bold.ttf", 0},
+    {"/usr/share/fonts/TTF/JetBrainsMono-Bold.ttf", 0},
+    {"/usr/share/fonts/truetype/ubuntu/UbuntuMono-B.ttf", 0},
+    {"/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", 0},
+    {"/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf", 0},
+    {"/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono-Bold.ttf", 0},
+    {"/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf", 0},
+    {"/usr/share/fonts/liberation-mono/LiberationMono-Bold.ttf", 0},
+    {"/usr/share/fonts/truetype/noto/NotoSansMono-Bold.ttf", 0},
+    {nullptr, 0}};
+
+static const FontFile kUiFonts[] = {
+    {"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0},
+    {"/usr/share/fonts/TTF/DejaVuSans.ttf", 0},
+    {nullptr, 0}};
+
+static const FontFile kUiSemiboldFonts[] = {
+    {"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0},
+    {"/usr/share/fonts/TTF/DejaVuSans-Bold.ttf", 0},
+    {nullptr, 0}};
+
+#endif
+
+void load_fonts(float s, float density) {
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->Clear();
 
     ImFontConfig cfg;
+    cfg.RasterizerDensity = density > 0.0f ? density : 1.0f;
     cfg.OversampleH = 3;
     cfg.OversampleV = 1;
     cfg.PixelSnapH = false;
