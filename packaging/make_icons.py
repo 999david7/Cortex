@@ -8,11 +8,13 @@ Outputs, all committed so a build never needs Python:
     packaging/macos/AppIcon.icns  the .app bundle's icon
     packaging/windows/app.ico     the .exe's icon (linked in through app.rc)
 
-The icon is the title-bar mark, set the way the UI sets anything active: a
-solid ink tile with the wireframe globe knocked out in paper white, and the
-small filled square that marks the focused pane. Every size is drawn on its
-own rather than scaled down from the largest, so the small ones keep strokes
-of at least a pixel and drop the latitudes that would blur into a grey disc.
+The icon is the title-bar globe printed as a halftone on paper: a grid of
+square dots, larger and darker where the sphere turns away from an ochre sun,
+with the globe's wireframe left as a trace of lighter dots. Every size is
+drawn on its own rather than scaled down from the largest: the grid gets
+coarser as the icon shrinks so each dot stays a pixel or more, the wireframe
+goes once there are too few cells to draw it, and at 32 px and below the
+globe is solid.
 """
 
 import io
@@ -22,12 +24,18 @@ import struct
 
 from PIL import Image, ImageDraw
 
-INK = (0x0E, 0x0E, 0x0D, 255)
 PAPER = (0xFC, 0xFC, 0xFA, 255)
-EDGE = (0x3A, 0x3A, 0x37, 255)
+HAIRLINE = (0xE4, 0xE4, 0xE0, 255)  # the UI's hairline rule
+OCHRE = (0xD4, 0x8A, 0x14, 255)     # the UI's ochre, brightened to carry at icon size
+DOT_LIGHT = (0x9A, 0x9A, 0x96)      # the faintest halftone square
+DOT_DARK = (0x1C, 0x1C, 0x1A)       # the densest one
 SUPERSAMPLE = 8
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def lerp(a, b, t):
+    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
 
 
 def draw_icon(size, mac_grid):
@@ -48,44 +56,79 @@ def draw_icon(size, mac_grid):
         margin = 0
         radius = s * 0.18
     tile = s - 2 * margin
-    # A faint edge, so the tile still reads against a dark Dock or menu.
-    edge = max(1, round(max(size / 512, 1) * SUPERSAMPLE))
-    d.rounded_rectangle([margin, margin, s - margin - 1, s - margin - 1], radius, fill=INK,
-                        outline=EDGE, width=edge)
+    u = tile / 824  # one unit of the 1024-px design, whatever the size
 
-    # Strokes are specified in output pixels, so they stay crisp and never
-    # fall below one pixel at 16 and 32.
-    w = round(max(size * 0.015, 1.3) * SUPERSAMPLE)
+    # The paper, framed by the hairline every pane in the UI carries.
+    edge = max(round(max(4 * u, SUPERSAMPLE)), 1)
+    d.rounded_rectangle([margin, margin, s - margin - 1, s - margin - 1], radius, fill=PAPER,
+                        outline=HAIRLINE, width=edge)
 
-    cx = cy = s / 2
-    r = tile * 0.30
-    detailed = size >= 48
+    # The globe and the sun that lights it, placed on the 1024 design grid.
+    cx, cy, r = margin + 405 * u, margin + 455 * u, 245 * u
+    sun_x, sun_y, sun_r = margin + 640 * u, margin + 175 * u, 42 * u
 
-    # Outline.
-    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=PAPER, width=w)
+    if size <= 32:
+        # Halftone cannot survive at this size: a solid globe and the sun.
+        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=lerp(DOT_LIGHT, DOT_DARK, 0.8) + (255,))
+        d.ellipse([sun_x - sun_r * 1.4, sun_y - sun_r * 1.4, sun_x + sun_r * 1.4,
+                   sun_y + sun_r * 1.4], fill=OCHRE)
+        return img.resize((size, size), Image.LANCZOS)
 
-    # Equator and latitudes, each ending inside the outline's stroke so the
-    # square line ends never poke out past the circle.
-    def chord(dy):
-        inner = r - w * 0.5
-        half = math.sqrt(max(inner * inner - dy * dy, 0.0))
-        d.line([cx - half, cy + dy, cx + half, cy + dy], fill=PAPER, width=w)
+    # The globe is a halftone: a grid of squares whose size and tone follow
+    # how much light each point of the sphere gets from the sun. Fewer cells
+    # at small sizes, so every square stays at least a pixel or two.
+    # An odd count puts a row and a column through the centre, so the
+    # equator and the meridian each land on exactly one line of cells.
+    cells = max(7, min(23, round(size / 11)) | 1)
+    pitch = 2 * r / cells
+    half = cells // 2
+    wireframe = cells >= 15
 
-    chord(0)
-    if detailed:
-        chord(-r * 0.43)
-        chord(r * 0.43)
+    lx, ly, lz = sun_x - cx, sun_y - cy, r * 0.6
+    ln = math.sqrt(lx * lx + ly * ly + lz * lz)
+    lx, ly, lz = lx / ln, ly / ln, lz / ln
 
-    # One meridian.
-    mr = r * 0.45
-    d.ellipse([cx - mr, cy - r, cx + mr, cy + r], outline=PAPER, width=w)
+    # The title-bar globe's lines, snapped to the grid: the equator, two
+    # latitudes and one meridian, each a single row or column of cells.
+    lat = round(0.43 * half)
 
-    # The focus mark, in the tile's top-left corner like "■ Ø2 EDITOR".
-    if size >= 32:
-        sq = tile * 0.062
-        inset = margin + tile * 0.13
-        d.rectangle([inset, inset, inset + sq, inset + sq], fill=PAPER)
+    def on_wire(i, j):
+        if j == 0 or abs(j) == lat:
+            return True
+        ny = j * pitch / r
+        return abs(i) == round(0.45 * math.sqrt(max(1 - ny * ny, 0.0)) * r / pitch)
 
+    for j in range(-half - 1, half + 2):
+        for i in range(-half - 1, half + 2):
+            px, py = cx + i * pitch, cy + j * pitch
+            nx, ny = (px - cx) / r, (py - cy) / r
+            dist = math.sqrt(nx * nx + ny * ny)
+            if dist > 1.0:
+                continue
+            nz = math.sqrt(1 - dist * dist)
+            lit = max(0.0, nx * lx + ny * ly + nz * lz)
+            v = 0.42 + 0.58 * (1 - lit)  # darker away from the sun
+            if dist > 0.86:
+                v *= 1 - (dist - 0.86) / 0.14 * 0.55  # the rim thins out, as in print
+            if wireframe and on_wire(i, j):
+                v = min(v, 0.22)
+            side = pitch * (0.20 + 0.36 * v)
+            color = lerp(DOT_LIGHT, DOT_DARK, v) + (255,)
+            d.rectangle([px - side / 2, py - side / 2, px + side / 2, py + side / 2], fill=color)
+
+    # The shadow it casts: one row of the smallest, faintest squares.
+    shadow_y = cy + r + pitch * 1.1
+    for i in range(-half, half + 1):
+        px = cx + i * pitch
+        t = abs(px - cx) / (r * 0.85)
+        if t > 1:
+            continue
+        side = pitch * (0.10 + 0.10 * (1 - t))
+        color = lerp((0xC8, 0xC8, 0xC4), DOT_LIGHT, 1 - t) + (255,)
+        d.rectangle([px - side / 2, shadow_y - side / 2, px + side / 2, shadow_y + side / 2],
+                    fill=color)
+
+    d.ellipse([sun_x - sun_r, sun_y - sun_r, sun_x + sun_r, sun_y + sun_r], fill=OCHRE)
     return img.resize((size, size), Image.LANCZOS)
 
 
