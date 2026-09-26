@@ -312,7 +312,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = CreateSolidBrush(RGB(0x0D, 0x0F, 0x14));
     wc.lpszClassName = L"AIIDEWindowClass";
-    wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    // Icon 1 is packaging/windows/app.ico, linked in through app.rc.
+    wc.hIcon = LoadIcon(instance, MAKEINTRESOURCE(1));
+    if (!wc.hIcon) wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    wc.hIconSm = (HICON)LoadImageW(instance, MAKEINTRESOURCE(1), IMAGE_ICON,
+                                   GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
     RegisterClassExW(&wc);
 
     const DWORD style = WS_POPUP | WS_THICKFRAME | WS_CAPTION | WS_SYSMENU | WS_MAXIMIZEBOX |

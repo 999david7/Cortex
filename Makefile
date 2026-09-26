@@ -39,6 +39,9 @@ ifeq ($(PLATFORM),windows)
   endif
   # Static runtime so the .exe runs on any Windows machine without extra DLLs.
   LDFLAGS += -static -static-libgcc -static-libstdc++
+  # The icon, compiled into the .exe as a resource.
+  WINDRES ?= windres
+  RES_OBJ := $(BUILD)/packaging/windows/app.res.o
   LIBS    := -ld3d11 -ldxgi -ld3dcompiler -lwinhttp -lws2_32 -ldwmapi -lole32 -loleaut32 \
              -luuid -lshell32 -lshlwapi -lgdi32 -limm32 -luser32 -ladvapi32
 else
@@ -81,9 +84,10 @@ endif
 
 OBJ := $(patsubst %.cpp,$(BUILD)/%.o,$(APP_SRC) $(IMGUI_SRC)) \
        $(patsubst %.mm,$(BUILD)/%.o,$(OBJC_SRC))
+DEP := $(OBJ:.o=.d)
+OBJ += $(RES_OBJ)
 # Without these, editing a header leaves stale objects linked against the old
 # struct layouts — which shows up as scrambled colours rather than as an error.
-DEP := $(OBJ:.o=.d)
 
 .PHONY: all clean run app
 
@@ -104,6 +108,11 @@ $(BUILD)/%.o: %.mm
 	@echo [objc] $<
 	@$(CXX) $(CXXFLAGS) -fobjc-arc -c $< -o $@
 
+$(BUILD)/packaging/windows/app.res.o: packaging/windows/app.rc packaging/windows/app.ico
+	@mkdir -p $(dir $@)
+	@echo [res ] $<
+	@$(WINDRES) $< -O coff -o $@
+
 run: $(TARGET)
 	@./$(TARGET)
 
@@ -116,6 +125,8 @@ ifeq ($(PLATFORM),macos)
 	@mkdir -p $(APP_BUNDLE)/Contents/MacOS $(APP_BUNDLE)/Contents/Resources
 	@cp $(TARGET) $(APP_BUNDLE)/Contents/MacOS/AI-IDE
 	@cp packaging/macos/Info.plist $(APP_BUNDLE)/Contents/Info.plist
+	@cp packaging/macos/AppIcon.icns $(APP_BUNDLE)/Contents/Resources/AppIcon.icns
+	@touch $(APP_BUNDLE) # makes Finder and the Dock pick up a changed icon
 	@echo Built $(APP_BUNDLE)
 else
 	@echo "make app builds a macOS .app bundle; on this platform just use $(TARGET)"

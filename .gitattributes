@@ -3,3 +3,5 @@
 *.png binary
 *.bmp binary
 *.exe binary
+*.icns binary
+*.ico binary

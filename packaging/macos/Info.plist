@@ -8,6 +8,8 @@
     <string>AI IDE</string>
     <key>CFBundleIdentifier</key>
     <string>local.ai-ide</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleExecutable</key>
     <string>AI-IDE</string>
     <key>CFBundlePackageType</key>
