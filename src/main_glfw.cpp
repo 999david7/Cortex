@@ -133,7 +133,7 @@ int main(int argc, char** argv) {
     glfwInitHint(GLFW_COCOA_CHDIR_RESOURCES, GLFW_FALSE);
 #endif
     if (!glfwInit()) {
-        std::fprintf(stderr, "AI IDE: could not initialise GLFW (is a display available?)\n");
+        std::fprintf(stderr, "Cortex: could not initialise GLFW (is a display available?)\n");
         return 1;
     }
 
@@ -161,9 +161,9 @@ int main(int argc, char** argv) {
     const int win_h = (work_h * 90) / 100 < 940 ? (work_h * 90) / 100 : 940;
 
     GLFWwindow* window = glfwCreateWindow(win_w > 0 ? win_w : 1280, win_h > 0 ? win_h : 800,
-                                          "AI IDE", nullptr, nullptr);
+                                          "Cortex", nullptr, nullptr);
     if (!window) {
-        std::fprintf(stderr, "AI IDE: could not create an OpenGL 3 window\n");
+        std::fprintf(stderr, "Cortex: could not create an OpenGL 3 window\n");
         glfwTerminate();
         return 1;
     }

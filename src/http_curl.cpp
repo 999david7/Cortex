@@ -116,7 +116,7 @@ Response request(const std::string& method,
     headers = curl_slist_append(headers, "Accept: application/json");
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "AI-IDE/1.0");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Cortex/1.0");
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L); // required on worker threads
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, (long)connect_timeout_ms);

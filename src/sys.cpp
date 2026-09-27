@@ -314,7 +314,11 @@ std::string app_data_dir() {
         DWORD n = GetEnvironmentVariableA("APPDATA", buf, MAX_PATH);
         base = n ? std::string(buf, buf + n) : std::string(".");
     }
-    std::string dir = join_path(base, "AI IDE");
+    std::string dir = join_path(base, "Cortex");
+    // The app used to be called AI IDE; carry its settings and layout over.
+    const std::string old_dir = join_path(base, "AI IDE");
+    if (!is_directory(dir) && is_directory(old_dir))
+        MoveFileW(widen(old_dir).c_str(), widen(dir).c_str());
     CreateDirectoryW(widen(dir).c_str(), nullptr);
     return dir;
 }

@@ -5,7 +5,7 @@ A local code editor written entirely in C++ that talks to your own models throug
 [Ollama](https://ollama.com). No cloud service, no account, no telemetry — the editor
 runs on your machine and the model runs on your machine.
 
-![AI IDE](docs/screenshot.png)
+![Cortex](docs/screenshot.png)
 
 ---
 
@@ -139,7 +139,7 @@ build.bat
 ```
 
 That puts the local toolchain on `PATH` and runs `make`. The result is
-`build\AI-IDE.exe`, a single self-contained executable (statically linked runtime, so
+`build\Cortex.exe`, a single self-contained executable (statically linked runtime, so
 it also runs on machines without a compiler installed).
 
 **macOS / Linux**
@@ -148,8 +148,8 @@ it also runs on machines without a compiler installed).
 make
 ```
 
-The result is `build/AI-IDE`. On macOS, `make app` also wraps it in
-`build/AI-IDE.app`, which can be dragged into `/Applications` and opened from
+The result is `build/Cortex`. On macOS, `make app` also wraps it in
+`build/Cortex.app`, which can be dragged into `/Applications` and opened from
 Finder or the Dock. (The bundle links Homebrew's GLFW, so it runs on Macs that
 have it installed.)
 
@@ -170,16 +170,16 @@ make clean
 ## Run
 
 ```bash
-build\AI-IDE.exe          # Windows
-./build/AI-IDE            # macOS / Linux
-open build/AI-IDE.app     # macOS, after make app
+build\Cortex.exe          # Windows
+./build/Cortex            # macOS / Linux
+open build/Cortex.app     # macOS, after make app
 ```
 
 A file or folder can be passed as an argument:
 
 ```bash
-build\AI-IDE.exe src\app.cpp
-./build/AI-IDE src/app.cpp
+build\Cortex.exe src\app.cpp
+./build/Cortex src/app.cpp
 ```
 
 `--screenshot <path> [frames]` renders that many frames, writes the back buffer
@@ -187,7 +187,7 @@ to a BMP and exits (on Windows the window renders through Direct3D, so no
 external screen grabber can capture it):
 
 ```bash
-build\AI-IDE.exe --screenshot shot.bmp 90
+build\Cortex.exe --screenshot shot.bmp 90
 ```
 
 On first start, open a folder (`Ctrl+K`, `Cmd+K` on a Mac) and pick a model in the
@@ -233,8 +233,9 @@ Everything is configurable from **File → Settings**: Ollama host, chat model,
 a separate completion model, temperature, top-p, context window, how much code is
 attached to a message, the system prompt, and the editor preferences.
 
-Configuration lives in `%APPDATA%\AI IDE\` on Windows,
-`~/Library/Application Support/AI IDE/` on macOS and `~/.config/ai-ide/` on Linux:
+Configuration lives in `%APPDATA%\Cortex\` on Windows,
+`~/Library/Application Support/Cortex/` on macOS and `~/.config/cortex/` on Linux
+(settings saved under the app's earlier name, AI IDE, are moved there on first start):
 
 - `settings.json` — preferences, recent folders, selected models
 - `layout.ini` — panel layout

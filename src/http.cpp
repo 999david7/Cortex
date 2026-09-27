@@ -103,7 +103,7 @@ Response request(const std::string& method,
         return resp;
     }
 
-    Handle session(WinHttpOpen(L"AI-IDE/1.0",
+    Handle session(WinHttpOpen(L"Cortex/1.0",
                                WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                                WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
     if (!session) {

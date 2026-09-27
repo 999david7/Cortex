@@ -834,7 +834,7 @@ void App::draw_welcome(const ImVec2& size) {
         ImFont* big = ui::F.ui_large ? ui::F.ui_large : ui::F.ui;
         const float bfs = big ? big->FontSize : mfs;
         ui::draw_caps(dl, big, bfs, ImVec2(p.x + logo + ui::px(14), p.y + (logo - bfs) * 0.5f),
-                      ui::C.ink, "ai-ide", ui::px(7.0f));
+                      ui::C.ink, "cortex", ui::px(7.0f));
         ImGui::Dummy(ImVec2(card_w, logo));
     }
 
@@ -3623,7 +3623,7 @@ void App::draw_title_bar() {
     const float wm_x = logo_x + logo + ui::px(10);
     const float wm_w =
         ui::draw_caps(dl, wm_font, wm_size, ImVec2(wm_x, origin.y + (h - wm_size) * 0.5f),
-                      ui::C.ink, "ai-ide", ui::px(4.0f));
+                      ui::C.ink, "cortex", ui::px(4.0f));
 
     // Menus, laid out like a masthead's section list.
     ImGui::SetCursorScreenPos(
@@ -4205,7 +4205,7 @@ void App::draw_about_modal() {
                                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
         return;
     ImGui::PushFont(ui::F.ui_large);
-    ImGui::TextUnformatted("AI IDE");
+    ImGui::TextUnformatted("Cortex");
     ImGui::PopFont();
     ImGui::PushFont(ui::F.ui);
     ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::C.text_dim),

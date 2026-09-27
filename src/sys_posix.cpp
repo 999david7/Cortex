@@ -424,7 +424,7 @@ std::string linux_file_dialog(int mode, const std::string& start_dir,
         else cmd += " --getexistingdirectory " + shell_quote(start);
         return capture_first_line(cmd);
     }
-    fprintf(stderr, "AI IDE: install zenity or kdialog for file dialogs, or pass a path "
+    fprintf(stderr, "Cortex: install zenity or kdialog for file dialogs, or pass a path "
                     "on the command line.\n");
     return std::string();
 }
@@ -463,12 +463,17 @@ std::string pick_save_file(void*, const std::string& suggested_name, const std::
 std::string app_data_dir() {
     std::string home = getenv("HOME") ? getenv("HOME") : ".";
 #ifdef __APPLE__
-    const std::string dir = home + "/Library/Application Support/AI IDE";
+    const std::string base = home + "/Library/Application Support";
+    const std::string dir = base + "/Cortex";
+    const std::string old_dir = base + "/AI IDE";
 #else
     const char* xdg = getenv("XDG_CONFIG_HOME");
     const std::string base = (xdg && *xdg) ? std::string(xdg) : home + "/.config";
-    const std::string dir = base + "/ai-ide";
+    const std::string dir = base + "/cortex";
+    const std::string old_dir = base + "/ai-ide";
 #endif
+    // The app used to be called AI IDE; carry its settings and layout over.
+    if (!is_directory(dir) && is_directory(old_dir)) ::rename(old_dir.c_str(), dir.c_str());
     std::string err;
     create_directories(dir, err);
     return dir;

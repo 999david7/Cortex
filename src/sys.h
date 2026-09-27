@@ -58,8 +58,10 @@ std::string pick_save_file(void* owner_hwnd, const std::string& suggested_name,
                            const std::string& start_dir);
 
 // -------------------------------------------------------------- app config
-// Created on demand: %APPDATA%\AI IDE on Windows, ~/Library/Application
-// Support/AI IDE on macOS, $XDG_CONFIG_HOME/ai-ide (~/.config/ai-ide) on Linux.
+// Created on demand: %APPDATA%\Cortex on Windows, ~/Library/Application
+// Support/Cortex on macOS, $XDG_CONFIG_HOME/cortex (~/.config/cortex) on Linux.
+// Settings left under the app's old name ("AI IDE", "ai-ide") are moved here
+// the first time.
 std::string app_data_dir();
 
 // ------------------------------------------------------------------ shell

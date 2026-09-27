@@ -1,5 +1,5 @@
 @echo off
-rem Build AI IDE using the bundled portable toolchain.
+rem Build Cortex using the bundled portable toolchain.
 setlocal
 
 set ROOT=%~dp0
@@ -20,7 +20,7 @@ if not exist "%TOOLCHAIN%\g++.exe" (
 
 set PATH=%TOOLCHAIN%;%PATH%
 
-echo Building AI IDE...
+echo Building Cortex...
 make -j%NUMBER_OF_PROCESSORS% %*
 if errorlevel 1 (
     echo.
@@ -29,5 +29,5 @@ if errorlevel 1 (
 )
 
 echo.
-echo Done:  build\AI-IDE.exe
+echo Done:  build\Cortex.exe
 endlocal

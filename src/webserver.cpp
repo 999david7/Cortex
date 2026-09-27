@@ -987,7 +987,7 @@ void LiveServer::serve(uintptr_t raw) {
         if (live_reload_.load()) {
             char script[900];
             std::snprintf(script, sizeof(script),
-                          "\n<script>/* injected by AI IDE live server */\n"
+                          "\n<script>/* injected by Cortex live server */\n"
                           "(function(){var seen=\"%lld\";function poll(){"
                           "fetch(\"/__livereload\",{cache:\"no-store\"})"
                           ".then(function(r){return r.text();})"

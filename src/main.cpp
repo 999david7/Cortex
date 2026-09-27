@@ -311,7 +311,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     wc.hInstance = instance;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = CreateSolidBrush(RGB(0x0D, 0x0F, 0x14));
-    wc.lpszClassName = L"AIIDEWindowClass";
+    wc.lpszClassName = L"CortexWindowClass";
     // Icon 1 is packaging/windows/app.ico, linked in through app.rc.
     wc.hIcon = LoadIcon(instance, MAKEINTRESOURCE(1));
     if (!wc.hIcon) wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
@@ -332,7 +332,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     const int win_x = work.left + (work_w - win_w) / 2;
     const int win_y = work.top + (work_h - win_h) / 2;
 
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"AI IDE", style, win_x, win_y, win_w, win_h,
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"Cortex", style, win_x, win_y, win_w, win_h,
                                 nullptr, nullptr, instance, nullptr);
     if (!hwnd) return 1;
 
@@ -346,7 +346,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
 
     if (!create_device(hwnd)) {
         cleanup_device();
-        MessageBoxW(nullptr, L"Could not create a Direct3D 11 device.", L"AI IDE", MB_ICONERROR);
+        MessageBoxW(nullptr, L"Could not create a Direct3D 11 device.", L"Cortex", MB_ICONERROR);
         return 1;
     }
 

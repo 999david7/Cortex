@@ -1,6 +1,6 @@
-# AI IDE
+# Cortex
 #   Windows:  build.bat (w64devkit in tools/, or any MinGW-w64 g++), or make
-#   macOS:    brew install glfw && make        (make app for AI-IDE.app)
+#   macOS:    brew install glfw && make        (make app for Cortex.app)
 #   Linux:    install GLFW 3.3+, libcurl and OpenGL headers, then make
 #
 #   make DEBUG=1         debug build (with a console window on Windows)
@@ -29,7 +29,7 @@ IMGUI_SRC := $(IMGUI)/imgui.cpp $(IMGUI)/imgui_draw.cpp $(IMGUI)/imgui_tables.cp
 OBJC_SRC  :=
 
 ifeq ($(PLATFORM),windows)
-  TARGET    := $(BUILD)/AI-IDE.exe
+  TARGET    := $(BUILD)/Cortex.exe
   CXXFLAGS  += -municode -DUNICODE -D_UNICODE
   IMGUI_SRC += $(IMGUI)/backends/imgui_impl_win32.cpp $(IMGUI)/backends/imgui_impl_dx11.cpp
   ifdef DEBUG
@@ -45,7 +45,7 @@ ifeq ($(PLATFORM),windows)
   LIBS    := -ld3d11 -ldxgi -ld3dcompiler -lwinhttp -lws2_32 -ldwmapi -lole32 -loleaut32 \
              -luuid -lshell32 -lshlwapi -lgdi32 -limm32 -luser32 -ladvapi32
 else
-  TARGET    := $(BUILD)/AI-IDE
+  TARGET    := $(BUILD)/Cortex
   IMGUI_SRC += $(IMGUI)/backends/imgui_impl_glfw.cpp $(IMGUI)/backends/imgui_impl_opengl3.cpp
 
   # GLFW through pkg-config when it is there, otherwise straight from Homebrew.
@@ -118,12 +118,12 @@ run: $(TARGET)
 
 # macOS: wrap the binary in an application bundle, so it can live in
 # /Applications, sit in the Dock and be opened from Finder.
-APP_BUNDLE := $(BUILD)/AI-IDE.app
+APP_BUNDLE := $(BUILD)/Cortex.app
 app: $(TARGET)
 ifeq ($(PLATFORM),macos)
 	@rm -rf $(APP_BUNDLE)
 	@mkdir -p $(APP_BUNDLE)/Contents/MacOS $(APP_BUNDLE)/Contents/Resources
-	@cp $(TARGET) $(APP_BUNDLE)/Contents/MacOS/AI-IDE
+	@cp $(TARGET) $(APP_BUNDLE)/Contents/MacOS/Cortex
 	@cp packaging/macos/Info.plist $(APP_BUNDLE)/Contents/Info.plist
 	@cp packaging/macos/AppIcon.icns $(APP_BUNDLE)/Contents/Resources/AppIcon.icns
 	@touch $(APP_BUNDLE) # makes Finder and the Dock pick up a changed icon
