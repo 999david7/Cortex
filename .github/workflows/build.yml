@@ -1,6 +1,7 @@
 # Builds Cortex for macOS (a universal .app in a disk image) and Windows on
-# every push. Pushing a tag that starts with "v" also publishes both as a
-# GitHub release, with .github/release-notes.md as its text.
+# every push. Pushing a tag that starts with "v", or running the workflow by
+# hand with "release" ticked, also publishes both as a GitHub release named
+# after VERSION, with .github/release-notes.md as its text.
 name: Build
 
 on:
@@ -9,6 +10,11 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      release:
+        description: Publish a release for the version in VERSION
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -83,7 +89,7 @@ jobs:
 
   release:
     name: Publish release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
     needs: [macos, windows]
     runs-on: ubuntu-latest
     steps:
@@ -97,5 +103,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="$(cat VERSION)"
-          gh release create "$GITHUB_REF_NAME" dist/Cortex-*.dmg dist/Cortex-*-windows.zip \
-            --title "Cortex BETA $version" --prerelease --notes-file .github/release-notes.md
+          # A tag push names the release; a run by hand tags this commit
+          # v<version>, and the tag is created along with the release.
+          tag="$GITHUB_REF_NAME"
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then tag="v$version"; fi
+          gh release create "$tag" dist/Cortex-*.dmg dist/Cortex-*-windows.zip \
+            --target "$GITHUB_SHA" --title "Cortex BETA $version" --prerelease \
+            --notes-file .github/release-notes.md
