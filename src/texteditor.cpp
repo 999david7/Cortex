@@ -2662,6 +2662,34 @@ void TextEditor::handle_keyboard() {
         return ctrl == c && shift == s && alt == a && ImGui::IsKeyPressed(k, repeat);
     };
 
+#ifdef __APPLE__
+    // macOS conventions, with ImGui reading Cmd as Ctrl: Cmd+arrows go to the
+    // edges of the line and the file, Option+arrows move by word, and the same
+    // keys with Backspace delete that far. Expanding the selection moves to
+    // Ctrl+Shift+Cmd+arrows, as in VS Code, since Shift+Option+arrows selects
+    // by word here.
+    {
+        const bool left = ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true);
+        const bool right = ImGui::IsKeyPressed(ImGuiKey_RightArrow, true);
+        const bool up = ImGui::IsKeyPressed(ImGuiKey_UpArrow, true);
+        const bool down = ImGui::IsKeyPressed(ImGuiKey_DownArrow, true);
+        if ((left || right) && ctrl && shift && io.KeySuper) {
+            if (right) expand_selection();
+            else shrink_selection();
+            return;
+        }
+        if ((left || right) && ctrl && !alt) { move_carets(left ? kHome : kEnd, shift); return; }
+        if ((left || right) && alt && !ctrl) { move_carets(left ? kWordLeft : kWordRight, shift); return; }
+        if ((up || down) && ctrl && !alt) { move_carets(up ? kDocStart : kDocEnd, shift); return; }
+        if (!read_only_) {
+            if (key(ImGuiKey_Backspace, false, false, true)) { delete_word(-1); return; }
+            if (key(ImGuiKey_Delete, false, false, true)) { delete_word(1); return; }
+            if (key(ImGuiKey_Backspace, true, false, false)) { delete_to_line_edge(-1); return; }
+        }
+        if (key(ImGuiKey_F, true, false, true, false)) { open_replace(); return; }
+    }
+#endif
+
     // --- history / clipboard ---
     if (key(ImGuiKey_Z, true, false, false)) { undo(); return; }
     if (key(ImGuiKey_Y, true, false, false) || key(ImGuiKey_Z, true, true, false)) { redo(); return; }

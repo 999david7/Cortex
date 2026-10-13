@@ -16,6 +16,15 @@
 namespace app {
 namespace {
 
+// What the system file browser is called here.
+#ifdef __APPLE__
+const char* const kRevealLabel = "Reveal in Finder";
+#elif defined(_WIN32)
+const char* const kRevealLabel = "Reveal in Explorer";
+#else
+const char* const kRevealLabel = "Show in File Manager";
+#endif
+
 // How many tool calls one chat turn may chain together before the IDE stops
 // and hands control back to the user.
 constexpr int kMaxAgentSteps = 16;
@@ -862,7 +871,7 @@ void App::draw_tree_node(TreeNode& node, int depth) {
         ImGui::PushFont(ui::F.ui);
         if (!node.is_dir && ImGui::MenuItem("Open")) open_file(node.path);
         if (node.is_dir && ImGui::MenuItem("Open as workspace")) set_workspace(node.path);
-        if (ImGui::MenuItem("Reveal in Explorer")) sys::open_in_explorer(node.path);
+        if (ImGui::MenuItem(kRevealLabel)) sys::open_in_explorer(node.path);
         if (ImGui::MenuItem("Copy path")) ImGui::SetClipboardText(node.path.c_str());
         if (!node.is_dir && ImGui::MenuItem("Add to chat context")) {
             std::string content, err;
@@ -1180,7 +1189,7 @@ void App::draw_editor_panel() {
             const int t = tab_menu_doc_;
             const bool valid = t >= 0 && t < (int)documents_.size();
             const bool has_path = valid && !documents_[t]->path.empty();
-            if (ImGui::MenuItem("Close", "Ctrl+W", false, valid)) close_request = t;
+            if (ImGui::MenuItem("Close", ui::keys("Ctrl+W"), false, valid)) close_request = t;
             if (ImGui::MenuItem("Close Others", nullptr, false, valid && documents_.size() > 1))
                 close_documents(CloseMode::Others, t);
             if (ImGui::MenuItem("Close to the Right", nullptr, false, valid && t + 1 < (int)documents_.size()))
@@ -1192,10 +1201,10 @@ void App::draw_editor_panel() {
                 ImGui::SetClipboardText(documents_[t]->path.c_str());
             if (ImGui::MenuItem("Copy Relative Path", nullptr, false, has_path))
                 ImGui::SetClipboardText(display_path(documents_[t]->path, workspace_, 4096).c_str());
-            if (ImGui::MenuItem("Reveal in Explorer", nullptr, false, has_path))
+            if (ImGui::MenuItem(kRevealLabel, nullptr, false, has_path))
                 sys::open_in_explorer(documents_[t]->path);
             ImGui::Separator();
-            if (ImGui::MenuItem("Reopen Closed Editor", "Ctrl+Shift+T", false, !closed_paths_.empty()))
+            if (ImGui::MenuItem("Reopen Closed Editor", ui::keys("Ctrl+Shift+T"), false, !closed_paths_.empty()))
                 reopen_closed_document();
             ImGui::PopFont();
             ImGui::EndPopup();
@@ -1913,7 +1922,7 @@ void App::draw_chat_panel() {
     std::string preview = settings_.chat_model.empty() ? "Select a model" : settings_.chat_model;
     if (ImGui::BeginCombo("##model", preview.c_str())) {
         if (models_.empty()) {
-            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::C.text_faint),
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::C.text_faint), "%s",
                                models_error_.empty() ? "No models found" : models_error_.c_str());
         }
         for (const ollama::Model& m : models_) {
@@ -3864,8 +3873,9 @@ void App::draw_title_bar() {
     const float menus_right = ImGui::GetItemRectMax().x;
 
     // Window buttons, kept square and unrounded like the rest of the frame.
+    // Where the system draws the frame it has its own, and these stay out.
     const float btn_w = ui::px(40);
-    const float buttons_left = origin.x + width - btn_w * 3.0f;
+    const float buttons_left = hooks_.native_frame ? origin.x + width : origin.x + width - btn_w * 3.0f;
     ImGui::SetCursorScreenPos(ImVec2(buttons_left, origin.y));
 
     struct WinBtn { ui::Icon icon; const char* id; };
@@ -3873,7 +3883,7 @@ void App::draw_title_bar() {
     WinBtn buttons[3] = {{ui::Icon::Minimize, "##min"},
                          {maximized ? ui::Icon::Restore : ui::Icon::Maximize, "##max"},
                          {ui::Icon::Close, "##close"}};
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < (hooks_.native_frame ? 0 : 3); ++i) {
         ImVec2 p = ImGui::GetCursorScreenPos();
         ImGui::SetCursorScreenPos(p);
         bool clicked = ImGui::InvisibleButton(buttons[i].id, ImVec2(btn_w, h));
@@ -3937,7 +3947,7 @@ void App::draw_title_bar() {
             const char* label = "go to file";
             ui::draw_caps(dl, cf, cf->FontSize, ImVec2(bx + ui::px(26), by + (box_h - cf->FontSize) * 0.5f),
                           ui::C.text_dim, label);
-            const char* hint = "ctrl+p";
+            const char* hint = ui::keys("ctrl+p");
             const float hw = ui::caps_width(cf, cf->FontSize, hint);
             ui::draw_caps(dl, cf, cf->FontSize,
                           ImVec2(bx + box_w - hw - ui::px(9), by + (box_h - cf->FontSize) * 0.5f),
@@ -3949,7 +3959,7 @@ void App::draw_title_bar() {
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     const bool in_bar = mouse.y >= origin.y && mouse.y < origin.y + h && mouse.x >= origin.x &&
                         mouse.x < buttons_left;
-    caption_drag_zone_ = in_bar && mouse.x > menus_right && mouse.x < right &&
+    caption_drag_zone_ = !hooks_.native_frame && in_bar && mouse.x > menus_right && mouse.x < right &&
                          !ImGui::IsAnyItemHovered() && !ImGui::IsAnyItemActive() &&
                          !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
 
@@ -4008,17 +4018,17 @@ void App::draw_menus() {
     // keyboard goes back to the editor afterwards.
     auto edit_item = [&](const char* label, const char* keys,
                          const std::function<void(ed::TextEditor&)>& fn) {
-        if (ImGui::MenuItem(label, keys, false, has_doc)) editor_command(fn);
+        if (ImGui::MenuItem(label, ui::keys(keys), false, has_doc)) editor_command(fn);
     };
 
     ImGui::SetNextWindowPos(anchors[0]);
     if (ImGui::BeginPopup("##menu_file")) {
-        if (ImGui::MenuItem("New File", "Ctrl+N")) new_document();
-        if (ImGui::MenuItem("Open File…", "Ctrl+O")) {
+        if (ImGui::MenuItem("New File", ui::keys("Ctrl+N"))) new_document();
+        if (ImGui::MenuItem("Open File…", ui::keys("Ctrl+O"))) {
             std::string path = sys::pick_open_file(hwnd_, workspace_dir_for_dialogs());
             if (!path.empty()) open_file(path);
         }
-        if (ImGui::MenuItem("Open Folder…", "Ctrl+K")) {
+        if (ImGui::MenuItem("Open Folder…", ui::keys("Ctrl+K"))) {
             std::string folder = sys::pick_folder(hwnd_, "Open Folder");
             if (!folder.empty()) set_workspace(folder);
         }
@@ -4027,31 +4037,31 @@ void App::draw_menus() {
                 if (ImGui::MenuItem(folder.c_str())) set_workspace(folder);
             ImGui::EndMenu();
         }
-        if (ImGui::MenuItem("Reopen Closed Editor", "Ctrl+Shift+T", false, !closed_paths_.empty()))
+        if (ImGui::MenuItem("Reopen Closed Editor", ui::keys("Ctrl+Shift+T"), false, !closed_paths_.empty()))
             reopen_closed_document();
         ImGui::Separator();
-        if (ImGui::MenuItem("Save", "Ctrl+S", false, has_doc)) save_document(doc, false);
-        if (ImGui::MenuItem("Save As…", "Ctrl+Shift+S", false, has_doc)) save_document(doc, true);
+        if (ImGui::MenuItem("Save", ui::keys("Ctrl+S"), false, has_doc)) save_document(doc, false);
+        if (ImGui::MenuItem("Save As…", ui::keys("Ctrl+Shift+S"), false, has_doc)) save_document(doc, true);
         if (ImGui::MenuItem("Save All", nullptr, false, has_doc)) save_all();
         if (ImGui::MenuItem("Revert File", nullptr, false, has_doc && !doc->path.empty()))
             revert_document(doc);
         ImGui::Separator();
-        if (ImGui::MenuItem("Close Tab", "Ctrl+W", false, has_doc)) close_document(active_doc_);
+        if (ImGui::MenuItem("Close Tab", ui::keys("Ctrl+W"), false, has_doc)) close_document(active_doc_);
         if (ImGui::MenuItem("Close Other Tabs", nullptr, false, documents_.size() > 1))
             close_documents(CloseMode::Others, active_doc_);
         if (ImGui::MenuItem("Close All Tabs", nullptr, false, has_doc))
             close_documents(CloseMode::All, active_doc_);
         ImGui::Separator();
-        if (ImGui::MenuItem("Settings…", "Ctrl+,")) show_settings_ = true;
-        if (ImGui::MenuItem("Exit", "Alt+F4")) should_exit_ = true;
+        if (ImGui::MenuItem("Settings…", ui::keys("Ctrl+,"))) show_settings_ = true;
+        if (ImGui::MenuItem("Exit", ui::keys("Alt+F4"))) should_exit_ = true;
         ImGui::EndPopup();
     }
 
     ImGui::SetNextWindowPos(anchors[1]);
     if (ImGui::BeginPopup("##menu_edit")) {
-        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, has_doc && doc->editor.can_undo()))
+        if (ImGui::MenuItem("Undo", ui::keys("Ctrl+Z"), false, has_doc && doc->editor.can_undo()))
             editor_command([](ed::TextEditor& e) { e.undo(); });
-        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, has_doc && doc->editor.can_redo()))
+        if (ImGui::MenuItem("Redo", ui::keys("Ctrl+Y"), false, has_doc && doc->editor.can_redo()))
             editor_command([](ed::TextEditor& e) { e.redo(); });
         ImGui::Separator();
         edit_item("Cut", "Ctrl+X", [](ed::TextEditor& e) { e.cut(); });
@@ -4060,7 +4070,7 @@ void App::draw_menus() {
         ImGui::Separator();
         edit_item("Find", "Ctrl+F", [](ed::TextEditor& e) { e.open_find(); });
         edit_item("Replace", "Ctrl+H", [](ed::TextEditor& e) { e.open_replace(); });
-        if (ImGui::MenuItem("Find in Files", "Ctrl+Shift+F", false, !workspace_.empty())) open_search_view();
+        if (ImGui::MenuItem("Find in Files", ui::keys("Ctrl+Shift+F"), false, !workspace_.empty())) open_search_view();
         ImGui::Separator();
         edit_item("Toggle Line Comment", "Ctrl+/", [](ed::TextEditor& e) { e.toggle_line_comment(); });
         edit_item("Toggle Block Comment", "Shift+Alt+A", [](ed::TextEditor& e) { e.toggle_block_comment(); });
@@ -4094,7 +4104,7 @@ void App::draw_menus() {
             ImGui::EndMenu();
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Toggle Overtype", "Insert", has_doc && doc->editor.overtype(), has_doc))
+        if (ImGui::MenuItem("Toggle Overtype", ui::keys("Insert"), has_doc && doc->editor.overtype(), has_doc))
             editor_command([](ed::TextEditor& e) { e.toggle_overtype(); });
         ImGui::EndPopup();
     }
@@ -4121,15 +4131,15 @@ void App::draw_menus() {
         edit_item("Cursor Undo", "Ctrl+U", [](ed::TextEditor& e) { e.cursor_undo(); });
         ImGui::Separator();
         ImGui::PushFont(ui::F.ui_small);
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::C.text_faint),
-                           "Alt+Click adds a cursor, Shift+Alt+Drag selects a column");
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::C.text_faint), "%s",
+                           ui::keys("Alt+Click adds a cursor, Shift+Alt+Drag selects a column"));
         ImGui::PopFont();
         ImGui::EndPopup();
     }
 
     ImGui::SetNextWindowPos(anchors[3]);
     if (ImGui::BeginPopup("##menu_view")) {
-        if (ImGui::MenuItem("Command Palette…", "Ctrl+Shift+P")) open_palette(">");
+        if (ImGui::MenuItem("Command Palette…", ui::keys("Ctrl+Shift+P"))) open_palette(">");
         ImGui::Separator();
         if (ImGui::BeginMenu("Cursor")) {
             if (ImGui::BeginMenu("Style")) {
@@ -4177,20 +4187,20 @@ void App::draw_menus() {
         if (ImGui::MenuItem("Highlight Current Line", nullptr, settings_.highlight_current_line))
             settings_.highlight_current_line = !settings_.highlight_current_line;
         ImGui::Separator();
-        if (ImGui::MenuItem("Zoom In", "Ctrl+=")) zoom_editor(1);
-        if (ImGui::MenuItem("Zoom Out", "Ctrl+-")) zoom_editor(-1);
-        if (ImGui::MenuItem("Reset Zoom", "Ctrl+0")) zoom_editor(0);
+        if (ImGui::MenuItem("Zoom In", ui::keys("Ctrl+="))) zoom_editor(1);
+        if (ImGui::MenuItem("Zoom Out", ui::keys("Ctrl+-"))) zoom_editor(-1);
+        if (ImGui::MenuItem("Reset Zoom", ui::keys("Ctrl+0"))) zoom_editor(0);
         ImGui::Separator();
         if (live_.running()) {
             char label[64];
             std::snprintf(label, sizeof(label), "Stop Live Server (port %d)", live_.port());
-            if (ImGui::MenuItem("Open Preview in Browser", "Alt+L")) open_live_preview();
+            if (ImGui::MenuItem("Open Preview in Browser", ui::keys("Alt+L"))) open_live_preview();
             if (ImGui::MenuItem("Copy Server Address")) {
                 ImGui::SetClipboardText(live_.origin().c_str());
                 toast("Copied " + live_.origin());
             }
             if (ImGui::MenuItem(label)) stop_live_server();
-        } else if (ImGui::MenuItem("Go Live (local web server)", "Alt+L")) {
+        } else if (ImGui::MenuItem("Go Live (local web server)", ui::keys("Alt+L"))) {
             open_live_preview();
         }
         ImGui::Separator();
@@ -4203,24 +4213,24 @@ void App::draw_menus() {
 
     ImGui::SetNextWindowPos(anchors[4]);
     if (ImGui::BeginPopup("##menu_go")) {
-        if (ImGui::MenuItem("Go to File…", "Ctrl+P")) open_palette("");
-        if (ImGui::MenuItem("Go to Line…", "Ctrl+G", false, has_doc)) open_palette(":");
-        if (ImGui::MenuItem("Go to Symbol in File…", "Ctrl+Shift+O", false, has_doc)) open_palette("@");
+        if (ImGui::MenuItem("Go to File…", ui::keys("Ctrl+P"))) open_palette("");
+        if (ImGui::MenuItem("Go to Line…", ui::keys("Ctrl+G"), false, has_doc)) open_palette(":");
+        if (ImGui::MenuItem("Go to Symbol in File…", ui::keys("Ctrl+Shift+O"), false, has_doc)) open_palette("@");
         edit_item("Go to Bracket", "Ctrl+Shift+\\", [](ed::TextEditor& e) { e.goto_matching_bracket(); });
         ImGui::Separator();
         edit_item("Next Match", "F3", [](ed::TextEditor& e) { e.find_next(); });
         edit_item("Previous Match", "Shift+F3", [](ed::TextEditor& e) { e.find_previous(); });
         ImGui::Separator();
-        if (ImGui::MenuItem("Next Tab", "Ctrl+Tab", false, documents_.size() > 1)) cycle_document(1);
-        if (ImGui::MenuItem("Previous Tab", "Ctrl+Shift+Tab", false, documents_.size() > 1)) cycle_document(-1);
+        if (ImGui::MenuItem("Next Tab", ui::keys("Ctrl+Tab"), false, documents_.size() > 1)) cycle_document(1);
+        if (ImGui::MenuItem("Previous Tab", ui::keys("Ctrl+Shift+Tab"), false, documents_.size() > 1)) cycle_document(-1);
         ImGui::EndPopup();
     }
 
     ImGui::SetNextWindowPos(anchors[5]);
     if (ImGui::BeginPopup("##menu_ai")) {
-        if (ImGui::MenuItem("Complete at Caret", "Ctrl+Space", false, has_doc))
+        if (ImGui::MenuItem("Complete at Caret", ui::keys("Ctrl+Space"), false, has_doc))
             request_inline_completion();
-        if (ImGui::MenuItem("Explain", "Ctrl+L", false, has_doc))
+        if (ImGui::MenuItem("Explain", ui::keys("Ctrl+L"), false, has_doc))
             quick_action("Explain", "Explain what this code does, step by step.", true);
         if (ImGui::MenuItem("Improve", nullptr, false, has_doc))
             quick_action("Improve",
@@ -4245,7 +4255,7 @@ void App::draw_menus() {
 
     ImGui::SetNextWindowPos(anchors[6]);
     if (ImGui::BeginPopup("##menu_help")) {
-        if (ImGui::MenuItem("Command Palette…", "Ctrl+Shift+P")) open_palette(">");
+        if (ImGui::MenuItem("Command Palette…", ui::keys("Ctrl+Shift+P"))) open_palette(">");
         if (ImGui::MenuItem("Keyboard Shortcuts")) show_shortcuts_ = true;
         if (ImGui::MenuItem("Ollama Website")) sys::open_url("https://ollama.com");
         if (ImGui::MenuItem("About")) show_about_ = true;
@@ -4691,8 +4701,8 @@ void App::draw_editor_settings() {
             ui::request_font_rebuild();
         }
         ImGui::PushFont(ui::F.ui_small);
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::C.text_faint),
-                           "Ctrl+= / Ctrl+- / Ctrl+0, or Ctrl+wheel over the editor.");
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::C.text_faint), "%s",
+                           ui::keys("Ctrl+= / Ctrl+- / Ctrl+0, or Ctrl+wheel over the editor."));
         ImGui::PopFont();
     }
 
@@ -4776,7 +4786,7 @@ void App::draw_shortcuts_modal() {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             ImGui::PushFont(ui::F.mono_small);
-            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::C.accent_hi), "%s", r.keys);
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::C.accent_hi), "%s", ui::keys(r.keys));
             ImGui::PopFont();
             ImGui::TableNextColumn();
             ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::C.text_dim), "%s", r.what);
@@ -4808,7 +4818,11 @@ void App::draw_about_modal() {
     ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::C.text_dim),
                        "A local-first code editor in C++ that talks to your own models.");
     ui::vspace(6);
+#ifdef _WIN32
     ImGui::Text("Rendering: Direct3D 11 + Dear ImGui");
+#else
+    ImGui::Text("Rendering: OpenGL 3 + GLFW + Dear ImGui");
+#endif
     ImGui::Text("Models: any Ollama-compatible server (%s)", settings_.ollama_host.c_str());
     ImGui::PopFont();
     ui::vspace(10);

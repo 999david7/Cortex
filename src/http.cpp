@@ -1,3 +1,6 @@
+// Windows only; macOS and Linux use http_curl.cpp.
+#ifdef _WIN32
+
 #include "http.h"
 
 #include <windows.h>
@@ -181,3 +184,5 @@ Response request(const std::string& method,
 }
 
 } // namespace http
+
+#endif // _WIN32

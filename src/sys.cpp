@@ -1,3 +1,6 @@
+// Windows only; macOS and Linux use sys_posix.cpp.
+#ifdef _WIN32
+
 #include "sys.h"
 
 #include <windows.h>
@@ -429,3 +432,5 @@ void Process::terminate() {
 }
 
 } // namespace sys
+
+#endif // _WIN32

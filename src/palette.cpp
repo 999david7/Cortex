@@ -750,7 +750,7 @@ void App::build_commands() {
     auto add = [&](const char* label, const char* keys, std::function<void()> fn) {
         PaletteItem item;
         item.label = label;
-        item.keys = keys ? keys : "";
+        item.keys = keys ? ui::keys(keys) : "";
         item.run = std::move(fn);
         commands_.push_back(std::move(item));
     };
@@ -800,7 +800,11 @@ void App::build_commands() {
             toast("Copied " + d->path);
         }
     });
+#ifdef __APPLE__
+    add("File: Reveal Active File in Finder", nullptr, [this]() {
+#else
     add("File: Reveal Active File in Explorer", nullptr, [this]() {
+#endif
         if (Document* d = active_document(); d && !d->path.empty()) sys::open_in_explorer(d->path);
     });
 

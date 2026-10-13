@@ -1,9 +1,18 @@
-// Thin Windows layer: files, folders, dialogs and child processes.
+// Thin platform layer: files, folders, dialogs and child processes.
+// sys.cpp implements it for Windows, sys_posix.cpp for macOS and Linux.
 #pragma once
 
 #include <memory>
 #include <string>
 #include <vector>
+
+#ifndef _WIN32
+// The case-insensitive comparisons the rest of the code calls by their MSVC
+// names.
+#include <strings.h>
+inline int _stricmp(const char* a, const char* b) { return strcasecmp(a, b); }
+inline int _strnicmp(const char* a, const char* b, size_t n) { return strncasecmp(a, b, n); }
+#endif
 
 namespace sys {
 
@@ -54,7 +63,8 @@ void open_in_explorer(const std::string& path);
 void open_url(const std::string& url);
 
 // --------------------------------------------------------------- processes
-// Runs a command through cmd.exe with stdout+stderr merged into a pipe.
+// Runs a command through the shell (cmd.exe on Windows, the user's login
+// shell elsewhere) with stdout+stderr merged into a pipe.
 class Process {
 public:
     ~Process();

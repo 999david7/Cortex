@@ -3,7 +3,11 @@
 
 A local code editor written entirely in C++ that talks to your own models through
 [Ollama](https://ollama.com). No cloud service, no account, no telemetry — the editor
-runs on your machine and the model runs on your machine.
+runs on your machine and the model runs on your machine. It runs on Windows and macOS
+(and builds on Linux).
+
+**Download:** the [latest release](https://github.com/999david7/Cortex/releases) has a
+`.dmg` for macOS 11+ (Apple silicon and Intel) and a `.zip` with the Windows `.exe`.
 
 ![AI IDE](docs/screenshot.png)
 
@@ -158,7 +162,28 @@ runs on your machine and the model runs on your machine.
 
 ---
 
-## Requirements
+## Installing on macOS
+
+1. Download `Cortex-<version>.dmg` from the
+   [releases page](https://github.com/999david7/Cortex/releases), open it and drag
+   **Cortex** onto **Applications**.
+2. The app is not notarized, so macOS blocks the first launch. Open it once, close
+   the warning, then go to **System Settings → Privacy & Security** and click
+   **Open Anyway** (on macOS 14 and earlier: Control-click the app → **Open**).
+   From Terminal, `xattr -dr com.apple.quarantine /Applications/Cortex.app` does
+   the same.
+3. Install [Ollama for Mac](https://ollama.com) and pull a model.
+
+On a Mac every `Ctrl` shortcut below is `Cmd`, and `Alt` is `Option`; the menus
+and the command palette show the Mac keys. The usual Mac editing keys work too:
+`Cmd+Left/Right` to the line ends, `Option+Left/Right` by word, `Option+Backspace`
+to delete a word, and `Cmd+Option+F` for replace (`Cmd+H` hides the app).
+
+Settings live in `~/Library/Application Support/AI IDE/`.
+
+---
+
+## Requirements (Windows)
 
 - Windows 10 or 11, 64-bit
 - [Ollama](https://ollama.com) running locally with at least one model pulled:
@@ -195,6 +220,24 @@ make clean
 ```
 
 > If the link step fails with a permission error, the IDE is still running — close it first.
+
+### macOS and Linux
+
+On a Mac, with the Xcode command line tools and GLFW (`brew install glfw`):
+
+```bash
+make            # build/cortex
+make app        # build/Cortex.app
+make dmg        # build/Cortex-<version>.dmg, the app next to an Applications link
+```
+
+`make dmg ARCHS="arm64 x86_64" GLFW_PREFIX=<static universal GLFW>` is how the
+release is built: one binary for both kinds of Mac, with nothing to install. The
+GitHub Actions workflow in `.github/workflows/build.yml` does exactly that on
+every push, and publishes a release when a `v*` tag is pushed.
+
+On Linux, with `libglfw3-dev` and `libcurl4-openssl-dev`, `make` builds
+`build/cortex` (file dialogs use `zenity` when it is installed).
 
 Editor tests:
 
@@ -312,6 +355,7 @@ Pointing `ollama_host` at another machine works too (for example
 | File | Purpose |
 | --- | --- |
 | `src/main.cpp` | Win32 frameless window, Direct3D 11 device, frame loop |
+| `src/main_glfw.cpp` | macOS / Linux: GLFW window, OpenGL 3 context, frame loop |
 | `src/app.cpp/.h` | The IDE: layout, explorer, tabs, chat, terminal, settings |
 | `src/texteditor.cpp/.h` | The code editor widget: multiple cursors, editing commands, find/replace, minimap, syntax tokenizer |
 | `src/palette.cpp` | Command palette, quick open, go to line/symbol and the status-bar pickers |
@@ -321,9 +365,12 @@ Pointing `ollama_host` at another machine works too (for example
 | `src/ui.cpp/.h` | Palette, fonts, hand-drawn vector icons, shared widgets |
 | `src/ollama.cpp/.h` | Ollama client — model list, streaming chat and completion |
 | `src/http.cpp/.h` | Minimal WinHTTP client with streaming callbacks |
+| `src/http_curl.cpp` | The same client on libcurl, for macOS and Linux |
 | `src/webserver.cpp/.h` | Local live-preview HTTP server |
 | `src/json.cpp/.h` | Small JSON parser/writer |
-| `src/sys.cpp/.h` | Files, native dialogs, child processes |
+| `src/sys.cpp/.h` | Files, native dialogs, child processes (Windows) |
+| `src/sys_posix.cpp`, `src/sys_mac.mm` | The same for macOS and Linux; native Mac file panels |
+| `macos/` | `Info.plist` template and the app icon for the macOS bundle |
 
 Requests run on background threads and hand results to the UI through a mutex-guarded
 snapshot, so streaming never blocks the frame loop.
@@ -332,15 +379,18 @@ snapshot, so streaming never blocks the frame loop.
 
 ## Notes and limitations
 
-- Windows only. The editor, UI and AI layers are portable C++; the window creation,
-  file dialogs, process handling and HTTP client are Windows-specific and would each
-  need a counterpart on other platforms.
+- Windows and macOS are the supported platforms; Linux builds and runs from source.
+  The editor, UI and AI layers are shared; each platform has its own window,
+  rendering, file dialogs, processes, HTTP client and live-server plumbing.
+- The macOS app is signed ad hoc, not notarized, so Gatekeeper asks once before the
+  first launch (see *Installing on macOS*).
 - The font atlas covers Latin-1, Latin Extended-A and common punctuation. Files with
   CJK or other scripts will show placeholder glyphs.
 - Every font in the UI is monospace, picked from SF Mono, Cascadia Mono,
   JetBrains Mono, Fira Code, IBM Plex Mono or Consolas, in that order. Only
   Consolas ships with Windows, so installing one of the others is the easiest way
   to change the whole look. A proportional face is used only if no mono is found.
+  On macOS the system's own SF Mono is used, with Menlo as the fallback.
 - A model has to fit in memory before it can answer. If a reply fails instantly
   with an allocation error, the model is too large for the machine or the context
   window is set too high — the chat panel says so and suggests the fix.

@@ -87,6 +87,9 @@ void set_scale(float s);
 float code_font_size();
 void set_code_font_size(float size);
 void request_font_rebuild();
+// Pixels per point the fonts are rasterized at: 2 on a Retina display, where
+// layout stays in points and only the glyphs get sharper.
+void set_font_density(float density);
 // True once after request_font_rebuild(); the frame loop calls it every frame.
 bool take_font_rebuild();
 inline float px(float v) { return v * scale(); }
@@ -193,6 +196,11 @@ float pane_title(int index, const char* name, const char* detail = nullptr);
 
 // Tooltip helper honouring the app style.
 void tooltip(const char* text);
+
+// A shortcut as this platform writes it: "Ctrl+" and "Alt+" become "Cmd+"
+// and "Opt+" on macOS (where ImGui reads Cmd as Ctrl), unchanged elsewhere.
+// The returned pointer stays valid for the life of the program.
+const char* keys(const char* text);
 
 // Wraps ImGui::Spacing() with an explicit pixel height.
 void vspace(float h);

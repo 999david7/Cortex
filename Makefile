@@ -1,59 +1,119 @@
-# AI IDE - build with w64devkit in tools/ (or any MinGW-w64 g++).
-#   build.bat            release build
-#   make DEBUG=1         debug build with a console window
-#   make test            build and run the editor tests
+# Cortex (AI IDE) build.
+#
+#   Windows (w64devkit or any MinGW-w64 g++):
+#     build.bat            release build -> build/AI-IDE.exe
+#   macOS (Xcode command line tools, GLFW):
+#     make                 -> build/cortex
+#     make app             -> build/Cortex.app
+#     make dmg             -> build/Cortex-<version>.dmg
+#   Linux (GLFW, libcurl):
+#     make                 -> build/cortex
+#   Everywhere:
+#     make DEBUG=1         debug build
+#     make test            build and run the editor tests
+#
+# The platform is read from the compiler, so cross-compiling for Windows from
+# another system works with CXX=x86_64-w64-mingw32-g++.
 
 CXX      ?= g++
 BUILD    := build
-TARGET   := $(BUILD)/AI-IDE.exe
+VERSION  := $(shell cat VERSION 2>/dev/null || echo 0.0)
 
 IMGUI    := vendor/imgui
 INCLUDES := -Isrc -I$(IMGUI) -I$(IMGUI)/backends
+WARN     := -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
 
-CXXFLAGS := -std=c++17 -municode -DUNICODE -D_UNICODE $(INCLUDES) \
-            -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers \
-            -MMD -MP
-
-ifdef DEBUG
-  CXXFLAGS += -g -O0
-  LDFLAGS  := -municode
+MACHINE := $(shell $(CXX) -dumpmachine)
+ifneq (,$(findstring mingw,$(MACHINE)))
+  PLATFORM := windows
+else ifneq (,$(findstring apple,$(MACHINE)))
+  PLATFORM := macos
 else
-  CXXFLAGS += -O2 -DNDEBUG
-  LDFLAGS  := -municode -mwindows -s
+  PLATFORM := linux
 endif
 
-# Static runtime so the .exe runs on any Windows machine without extra DLLs.
-LDFLAGS += -static -static-libgcc -static-libstdc++
-LIBS    := -ld3d11 -ldxgi -ld3dcompiler -lwinhttp -lws2_32 -ldwmapi -lole32 -loleaut32 \
-           -luuid -lshell32 -lshlwapi -lgdi32 -limm32 -luser32 -ladvapi32
-
+IMGUI_CORE := $(IMGUI)/imgui.cpp $(IMGUI)/imgui_draw.cpp $(IMGUI)/imgui_tables.cpp \
+              $(IMGUI)/imgui_widgets.cpp
+# Every source file builds everywhere: the ones for another platform compile
+# to nothing (sys.cpp is Windows only, sys_posix.cpp the rest, and so on).
 APP_SRC := $(wildcard src/*.cpp)
-IMGUI_SRC := $(IMGUI)/imgui.cpp $(IMGUI)/imgui_draw.cpp $(IMGUI)/imgui_tables.cpp \
-             $(IMGUI)/imgui_widgets.cpp \
-             $(IMGUI)/backends/imgui_impl_win32.cpp $(IMGUI)/backends/imgui_impl_dx11.cpp
+MM_SRC  :=
 
-OBJ := $(patsubst %.cpp,$(BUILD)/%.o,$(APP_SRC) $(IMGUI_SRC))
+ifeq ($(PLATFORM),windows)
+  # ---------------------------------------------------------------- Windows
+  TARGET   := $(BUILD)/AI-IDE.exe
+  CXXFLAGS := -std=c++17 -municode -DUNICODE -D_UNICODE $(INCLUDES) $(WARN) -MMD -MP
+  ifdef DEBUG
+    CXXFLAGS += -g -O0
+    LDFLAGS  := -municode
+  else
+    CXXFLAGS += -O2 -DNDEBUG
+    LDFLAGS  := -municode -mwindows -s
+  endif
+  # Static runtime so the .exe runs on any Windows machine without extra DLLs.
+  LDFLAGS += -static -static-libgcc -static-libstdc++
+  LIBS    := -ld3d11 -ldxgi -ld3dcompiler -lwinhttp -lws2_32 -ldwmapi -lole32 -loleaut32 \
+             -luuid -lshell32 -lshlwapi -lgdi32 -limm32 -luser32 -ladvapi32
+  IMGUI_SRC := $(IMGUI_CORE) $(IMGUI)/backends/imgui_impl_win32.cpp \
+               $(IMGUI)/backends/imgui_impl_dx11.cpp
+  TEST_LIBS := -static -static-libgcc -static-libstdc++ -luser32 -limm32
+else
+  # ---------------------------------------------------------- macOS / Linux
+  TARGET   := $(BUILD)/cortex
+  CXXFLAGS := -std=c++17 $(INCLUDES) $(WARN) -MMD -MP
+  ifdef DEBUG
+    CXXFLAGS += -g -O0
+  else
+    CXXFLAGS += -O2 -DNDEBUG
+  endif
+  IMGUI_SRC := $(IMGUI_CORE) $(IMGUI)/backends/imgui_impl_glfw.cpp \
+               $(IMGUI)/backends/imgui_impl_opengl3.cpp
+
+  # GLFW comes from pkg-config, or from GLFW_PREFIX when it was built by hand
+  # (the release build uses a static, universal copy so the app needs nothing
+  # installed).
+  ifdef GLFW_PREFIX
+    CXXFLAGS  += -I$(GLFW_PREFIX)/include
+    GLFW_LIBS := $(GLFW_PREFIX)/lib/libglfw3.a
+  else
+    CXXFLAGS  += $(shell pkg-config --cflags glfw3 2>/dev/null)
+    GLFW_LIBS := $(shell pkg-config --libs glfw3 2>/dev/null || echo -lglfw)
+  endif
+
+  ifeq ($(PLATFORM),macos)
+    # ARCHS="arm64 x86_64" builds one binary for Apple silicon and Intel.
+    MACOS_MIN  := 11.0
+    ARCH_FLAGS := $(foreach a,$(ARCHS),-arch $(a)) -mmacosx-version-min=$(MACOS_MIN)
+    CXXFLAGS   += $(ARCH_FLAGS) -DGL_SILENCE_DEPRECATION
+    LDFLAGS    := $(ARCH_FLAGS)
+    MM_SRC     := src/sys_mac.mm
+    # ImGui's clipboard uses the pasteboard API in ApplicationServices.
+    MAC_FRAMEWORKS := -framework Cocoa -framework OpenGL -framework IOKit \
+                      -framework CoreFoundation -framework CoreVideo -framework QuartzCore \
+                      -framework ApplicationServices
+    LIBS       := $(GLFW_LIBS) -lcurl $(MAC_FRAMEWORKS)
+    TEST_LIBS  := $(ARCH_FLAGS) -framework ApplicationServices
+  else
+    LDFLAGS    :=
+    LIBS       := $(GLFW_LIBS) -lGL -lcurl -lpthread -ldl
+    TEST_LIBS  :=
+  endif
+endif
+
+OBJ := $(patsubst %.cpp,$(BUILD)/%.o,$(APP_SRC) $(IMGUI_SRC)) $(patsubst %.mm,$(BUILD)/%.o,$(MM_SRC))
 # Without these, editing a header leaves stale objects linked against the old
 # struct layouts — which shows up as scrambled colours rather than as an error.
 DEP := $(OBJ:.o=.d)
 
 # The editor tests need only the editor, the language table, the UI palette
-# and the ImGui core: no window, no GPU, and no Windows unless the compiler
-# targets it.
+# and the ImGui core: no window and no GPU.
 TEST_TARGET := $(BUILD)/test_editor.exe
-TEST_SRC := tests/test_editor.cpp src/texteditor.cpp src/lang.cpp src/ui.cpp \
-            $(IMGUI)/imgui.cpp $(IMGUI)/imgui_draw.cpp $(IMGUI)/imgui_tables.cpp \
-            $(IMGUI)/imgui_widgets.cpp
+TEST_SRC := tests/test_editor.cpp src/texteditor.cpp src/lang.cpp src/ui.cpp $(IMGUI_CORE)
 TEST_OBJ := $(patsubst %.cpp,$(BUILD)/test/%.o,$(TEST_SRC))
-TEST_CXXFLAGS := -std=c++17 $(INCLUDES) -O1 -Wall -Wno-unused-parameter -MMD -MP
-TEST_LIBS :=
-ifneq (,$(findstring mingw,$(shell $(CXX) -dumpmachine)))
-  # ImGui's default clipboard and IME hooks use the Win32 API.
-  TEST_LIBS := -static -static-libgcc -static-libstdc++ -luser32 -limm32
-endif
+TEST_CXXFLAGS := -std=c++17 $(INCLUDES) -O1 -Wall -Wno-unused-parameter -MMD -MP $(ARCH_FLAGS)
 DEP += $(TEST_OBJ:.o=.d)
 
-.PHONY: all clean run test
+.PHONY: all clean run test app dmg
 
 all: $(TARGET)
 
@@ -67,8 +127,13 @@ $(BUILD)/%.o: %.cpp
 	@echo [c++ ] $<
 	@$(CXX) $(CXXFLAGS) -c $< -o $@
 
+$(BUILD)/%.o: %.mm
+	@mkdir -p $(dir $@)
+	@echo [objc] $<
+	@$(CXX) $(CXXFLAGS) -fobjc-arc -c $< -o $@
+
 run: $(TARGET)
-	@./$(TARGET)
+	@$(TARGET)
 
 $(BUILD)/test/%.o: %.cpp
 	@mkdir -p $(dir $@)
@@ -81,6 +146,41 @@ $(TEST_TARGET): $(TEST_OBJ)
 
 test: $(TEST_TARGET)
 	@$(TEST_TARGET)
+
+# ------------------------------------------------------------ macOS bundle
+APP := $(BUILD)/Cortex.app
+DMG := $(BUILD)/Cortex-$(VERSION).dmg
+
+app: $(APP)
+
+# The icon is drawn from macos/icon.png with the system's own tools; the app
+# is signed ad hoc, which Apple silicon requires before it runs at all.
+$(APP): $(TARGET) macos/Info.plist macos/icon.png VERSION
+	@echo [app ] $@
+	@rm -rf $@ $(BUILD)/Cortex.iconset
+	@mkdir -p $@/Contents/MacOS $@/Contents/Resources $(BUILD)/Cortex.iconset
+	@cp $(TARGET) $@/Contents/MacOS/cortex
+	@sed "s/@VERSION@/$(VERSION)/g" macos/Info.plist > $@/Contents/Info.plist
+	@for s in 16 32 128 256 512; do \
+	    sips -z $$s $$s macos/icon.png --out $(BUILD)/Cortex.iconset/icon_$${s}x$${s}.png >/dev/null; \
+	    sips -z $$((s*2)) $$((s*2)) macos/icon.png --out $(BUILD)/Cortex.iconset/icon_$${s}x$${s}@2x.png >/dev/null; \
+	done
+	@iconutil -c icns $(BUILD)/Cortex.iconset -o $@/Contents/Resources/Cortex.icns
+	@codesign --force --sign - $@
+	@echo Built $@
+
+dmg: $(DMG)
+
+# A disk image with the app next to a link to /Applications, so installing is
+# one drag.
+$(DMG): $(APP)
+	@echo [dmg ] $@
+	@rm -rf $(BUILD)/dmg $@
+	@mkdir -p $(BUILD)/dmg
+	@cp -R $(APP) $(BUILD)/dmg/
+	@ln -s /Applications $(BUILD)/dmg/Applications
+	@hdiutil create -volname "Cortex $(VERSION)" -srcfolder $(BUILD)/dmg -ov -format UDZO $@ >/dev/null
+	@echo Built $@
 
 clean:
 	@rm -rf $(BUILD)

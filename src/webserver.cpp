@@ -1,9 +1,25 @@
 #include "webserver.h"
 
+#ifdef _WIN32
 // Winsock has to come before windows.h, or windows.h pulls in the 1.1 headers.
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#else
+#include <arpa/inet.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <chrono>
+#include <cwchar>
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -12,9 +28,22 @@
 
 #include "sys.h"
 
+#ifndef _WIN32
+// The few Winsock names the server is written against, on BSD sockets.
+using SOCKET = int;
+constexpr SOCKET INVALID_SOCKET = -1;
+inline int closesocket(SOCKET s) { return close(s); }
+#endif
+
 namespace web {
 
 namespace {
+
+#ifdef _WIN32
+constexpr wchar_t kSep = L'\\';
+#else
+constexpr wchar_t kSep = L'/';
+#endif
 
 constexpr int kWorkerThreads = 6;
 constexpr size_t kMaxRequestBytes = 32 * 1024;
@@ -205,46 +234,127 @@ std::string page(const std::string& title, const std::string& body) {
            "</style></head><body>" + body + "</body></html>";
 }
 
-bool ends_with_w(const std::wstring& s, const wchar_t* suffix) {
+[[maybe_unused]] bool ends_with_w(const std::wstring& s, const wchar_t* suffix) {
     const size_t n = wcslen(suffix);
     return s.size() >= n && s.compare(s.size() - n, n, suffix) == 0;
 }
 
-std::wstring lower_w(std::wstring s) {
+[[maybe_unused]] std::wstring lower_w(std::wstring s) {
     for (wchar_t& c : s)
         if (c >= L'A' && c <= L'Z') c = (wchar_t)(c - L'A' + L'a');
     return s;
 }
 
-// Windows file helpers, used directly so paths stay wide end to end.
-bool attrs_of(const std::wstring& path, DWORD& out) {
-    const DWORD a = GetFileAttributesW(path.c_str());
-    if (a == INVALID_FILE_ATTRIBUTES) return false;
-    out = a;
-    return true;
+// Paths stay wide end to end. Windows and macOS file systems ignore case, so
+// the "is this inside the root" checks do too; Linux compares exactly.
+std::wstring fold(const std::wstring& s) {
+#if defined(_WIN32) || defined(__APPLE__)
+    return lower_w(s);
+#else
+    return s;
+#endif
 }
 
-bool read_whole_file(const std::wstring& path, std::string& out) {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    LARGE_INTEGER size{};
-    if (!GetFileSizeEx(h, &size) || size.QuadPart > (LONGLONG)64 * 1024 * 1024) {
-        CloseHandle(h);
-        return false;
+bool full_path(const std::wstring& in, std::wstring& out) {
+#ifdef _WIN32
+    wchar_t full[MAX_PATH * 4];
+    const DWORD n = GetFullPathNameW(in.c_str(), (DWORD)(sizeof(full) / sizeof(full[0])), full, nullptr);
+    if (n == 0 || n >= sizeof(full) / sizeof(full[0])) return false;
+    out = full;
+    return true;
+#else
+    if (in.empty()) return false;
+    out = sys::widen(sys::normalize(sys::narrow(in)));
+    return true;
+#endif
+}
+
+// True when the path exists; is_dir says whether it is a folder.
+bool path_info(const std::wstring& path, bool& is_dir) {
+#ifdef _WIN32
+    const DWORD a = GetFileAttributesW(path.c_str());
+    if (a == INVALID_FILE_ATTRIBUTES) return false;
+    is_dir = (a & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    return true;
+#else
+    struct stat st {};
+    if (stat(sys::narrow(path).c_str(), &st) != 0) return false;
+    is_dir = S_ISDIR(st.st_mode);
+    return true;
+#endif
+}
+
+// A file opened for streaming: size, seek and read, on either system.
+class InFile {
+public:
+    ~InFile() { close(); }
+    bool open(const std::wstring& path) {
+#ifdef _WIN32
+        h_ = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h_ == INVALID_HANDLE_VALUE) return false;
+        LARGE_INTEGER size{};
+        if (!GetFileSizeEx(h_, &size)) return false;
+        size_ = size.QuadPart;
+        return true;
+#else
+        f_ = std::fopen(sys::narrow(path).c_str(), "rb");
+        if (!f_) return false;
+        struct stat st {};
+        if (fstat(fileno(f_), &st) != 0) return false;
+        size_ = (long long)st.st_size;
+        return true;
+#endif
     }
-    out.resize((size_t)size.QuadPart);
+    long long size() const { return size_; }
+    bool seek(long long at) {
+#ifdef _WIN32
+        LARGE_INTEGER pos{};
+        pos.QuadPart = at;
+        return SetFilePointerEx(h_, pos, nullptr, FILE_BEGIN) != 0;
+#else
+        return fseeko(f_, (off_t)at, SEEK_SET) == 0;
+#endif
+    }
+    // Returns the bytes read; 0 at the end or on an error.
+    size_t read(char* buf, size_t want) {
+#ifdef _WIN32
+        DWORD got = 0;
+        if (!ReadFile(h_, buf, (DWORD)want, &got, nullptr)) return 0;
+        return got;
+#else
+        return std::fread(buf, 1, want, f_);
+#endif
+    }
+    void close() {
+#ifdef _WIN32
+        if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_);
+        h_ = INVALID_HANDLE_VALUE;
+#else
+        if (f_) std::fclose(f_);
+        f_ = nullptr;
+#endif
+    }
+
+private:
+#ifdef _WIN32
+    HANDLE h_ = INVALID_HANDLE_VALUE;
+#else
+    FILE* f_ = nullptr;
+#endif
+    long long size_ = 0;
+};
+
+bool read_whole_file(const std::wstring& path, std::string& out) {
+    InFile f;
+    if (!f.open(path) || f.size() > (long long)64 * 1024 * 1024) return false;
+    out.resize((size_t)f.size());
     size_t done = 0;
     while (done < out.size()) {
-        DWORD got = 0;
-        const DWORD want = (DWORD)std::min<size_t>(out.size() - done, 1 << 20);
-        if (!ReadFile(h, &out[done], want, &got, nullptr) || got == 0) {
-            CloseHandle(h);
-            return false;
-        }
+        const size_t got = f.read(&out[done], std::min<size_t>(out.size() - done, 1 << 20));
+        if (got == 0) return false;
         done += got;
     }
-    CloseHandle(h);
     return true;
 }
 
@@ -269,13 +379,9 @@ std::string LiveServer::url_for(const std::string& absolute_path) const {
     if (absolute_path.empty()) return base + "/";
 
     // The file has to sit inside the root for the server to be able to reach it.
-    wchar_t full[MAX_PATH * 4];
-    const DWORD n = GetFullPathNameW(sys::widen(absolute_path).c_str(),
-                                     (DWORD)(sizeof(full) / sizeof(full[0])), full, nullptr);
-    if (n == 0 || n >= sizeof(full) / sizeof(full[0])) return base + "/";
-
-    const std::wstring file = full;
-    const std::wstring lf = lower_w(file), lr = lower_w(root_w_);
+    std::wstring file;
+    if (!full_path(sys::widen(absolute_path), file)) return base + "/";
+    const std::wstring lf = fold(file), lr = fold(root_w_);
     if (lf.size() < lr.size() || lf.compare(0, lr.size(), lr) != 0) return base + "/";
 
     std::string rel = sys::narrow(file.substr(lr.size()));
@@ -303,29 +409,29 @@ bool LiveServer::start(const std::string& root, int port, std::string& err) {
         err = "Open a folder first — the server needs something to serve.";
         return false;
     }
-    wchar_t full[MAX_PATH * 4];
-    const DWORD n = GetFullPathNameW(sys::widen(root).c_str(),
-                                     (DWORD)(sizeof(full) / sizeof(full[0])), full, nullptr);
-    if (n == 0 || n >= sizeof(full) / sizeof(full[0])) {
+    std::wstring full;
+    if (!full_path(sys::widen(root), full)) {
         err = "That folder path could not be resolved.";
         return false;
     }
-    DWORD attrs = 0;
-    if (!attrs_of(full, attrs) || !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+    bool root_is_dir = false;
+    if (!path_info(full, root_is_dir) || !root_is_dir) {
         err = "That folder does not exist.";
         return false;
     }
 
     root_w_ = full;
-    if (root_w_.empty() || root_w_.back() != L'\\') root_w_ += L'\\';
-    root_ = sys::narrow(root_w_.substr(0, root_w_.size() - 1));
+    if (root_w_.empty() || root_w_.back() != kSep) root_w_ += kSep;
+    root_ = sys::narrow(root_w_.size() > 1 ? root_w_.substr(0, root_w_.size() - 1) : root_w_);
 
+#ifdef _WIN32
     WSADATA wsa{};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         err = "Windows sockets could not be started.";
         return false;
     }
     wsa_started_ = true;
+#endif
 
     // Loopback only: this is a preview for the machine it runs on, not a way to
     // put the folder on the network.
@@ -335,6 +441,13 @@ bool LiveServer::start(const std::string& root, int port, std::string& err) {
     for (int p = port; p <= port + 20; ++p) {
         listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (listener == INVALID_SOCKET) break;
+#ifndef _WIN32
+        // Here SO_REUSEADDR only lets a restarted server take its port back
+        // from TIME_WAIT; it never lets two listeners share one.
+        int yes = 1;
+        setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+        fcntl(listener, F_SETFD, FD_CLOEXEC);
+#endif
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = htons((u_short)p);
@@ -354,7 +467,9 @@ bool LiveServer::start(const std::string& root, int port, std::string& err) {
         char buf[160];
         std::snprintf(buf, sizeof(buf), "Ports %d-%d are all in use.", port, port + 20);
         err = buf;
+#ifdef _WIN32
         WSACleanup();
+#endif
         wsa_started_ = false;
         return false;
     }
@@ -366,7 +481,9 @@ bool LiveServer::start(const std::string& root, int port, std::string& err) {
     served_.store(0);
     token_.fetch_add(1);
 
+#ifdef _WIN32
     stop_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+#endif
 
     workers_.reserve(kWorkerThreads);
     for (int i = 0; i < kWorkerThreads; ++i)
@@ -383,10 +500,10 @@ bool LiveServer::start(const std::string& root, int port, std::string& err) {
 void LiveServer::stop() {
     if (!running_.load() && !stopping_.load() && !acceptor_.joinable()) {
         // Never started, or already fully stopped.
-        if (wsa_started_) {
-            WSACleanup();
-            wsa_started_ = false;
-        }
+#ifdef _WIN32
+        if (wsa_started_) WSACleanup();
+#endif
+        wsa_started_ = false;
         return;
     }
 
@@ -395,7 +512,9 @@ void LiveServer::stop() {
     // Closing the listening socket is what makes the blocked accept() return.
     const uintptr_t listener = listen_.exchange((uintptr_t)-1);
     if (listener != (uintptr_t)-1) closesocket((SOCKET)listener);
+#ifdef _WIN32
     if (stop_event_) SetEvent((HANDLE)stop_event_);
+#endif
     queue_cv_.notify_all();
 
     if (acceptor_.joinable()) acceptor_.join();
@@ -412,14 +531,12 @@ void LiveServer::stop() {
         }
     }
 
-    if (stop_event_) {
-        CloseHandle((HANDLE)stop_event_);
-        stop_event_ = nullptr;
-    }
-    if (wsa_started_) {
-        WSACleanup();
-        wsa_started_ = false;
-    }
+#ifdef _WIN32
+    if (stop_event_) CloseHandle((HANDLE)stop_event_);
+    if (wsa_started_) WSACleanup();
+#endif
+    stop_event_ = nullptr;
+    wsa_started_ = false;
 
     const bool was_running = running_.exchange(false);
     stopping_.store(false);
@@ -434,17 +551,45 @@ void LiveServer::accept_loop() {
         const uintptr_t listener = listen_.load();
         if (listener == (uintptr_t)-1) break;
 
+#ifndef _WIN32
+        // Closing a socket does not wake a thread blocked in accept() here the
+        // way it does on Windows, so wait in short slices and check for stop.
+        pollfd pfd{};
+        pfd.fd = (SOCKET)listener;
+        pfd.events = POLLIN;
+        const int ready = ::poll(&pfd, 1, 250);
+        if (ready <= 0) continue;
+#endif
+
         sockaddr_in from{};
+#ifdef _WIN32
         int from_len = sizeof(from);
+#else
+        socklen_t from_len = sizeof(from);
+#endif
         const SOCKET client = accept((SOCKET)listener, (sockaddr*)&from, &from_len);
         if (client == INVALID_SOCKET) {
             if (stopping_.load()) break;
             // stop() closes the listener, which is the only fatal case; a client
             // that vanished mid-handshake just means "try the next one".
+#ifdef _WIN32
             const int e = WSAGetLastError();
             if (e == WSAECONNRESET || e == WSAEINTR || e == WSAEMFILE || e == WSAENOBUFS) continue;
+#else
+            const int e = errno;
+            if (e == ECONNABORTED || e == EINTR || e == EMFILE || e == ENFILE || e == ENOBUFS ||
+                e == EAGAIN || e == EWOULDBLOCK)
+                continue;
+#endif
             break;
         }
+#ifndef _WIN32
+        fcntl(client, F_SETFD, FD_CLOEXEC);
+#ifdef SO_NOSIGPIPE
+        int one = 1; // a browser that hangs up must not kill the IDE with SIGPIPE
+        setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
+#endif
 
         {
             std::lock_guard<std::mutex> lock(queue_mu_);
@@ -478,6 +623,7 @@ void LiveServer::worker_loop() {
     }
 }
 
+#ifdef _WIN32
 void LiveServer::watch_loop() {
     HANDLE dir = CreateFileW(root_w_.c_str(), FILE_LIST_DIRECTORY,
                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
@@ -540,6 +686,68 @@ void LiveServer::watch_loop() {
     CloseHandle(ov.hEvent);
     CloseHandle(dir);
 }
+#else
+namespace {
+
+// A fingerprint of the tree: every file's path, size and modification time
+// folded into one number. Two scans that differ mean something changed.
+void fingerprint(const std::string& dir, int depth, unsigned long long& hash, int& budget) {
+    if (depth > 24 || budget <= 0) return;
+    DIR* d = opendir(dir.c_str());
+    if (!d) return;
+    while (dirent* e = readdir(d)) {
+        if (--budget <= 0) break;
+        const std::string name = e->d_name;
+        if (name == "." || name == "..") continue;
+        // The same noise the Windows watcher ignores: version control,
+        // dependencies, and editors' temporaries.
+        const bool temp = name.size() > 4 && (name.compare(name.size() - 4, 4, ".tmp") == 0 ||
+                                              name.compare(name.size() - 4, 4, ".swp") == 0);
+        if (name == ".git" || name == "node_modules" || name == ".DS_Store" ||
+            name.find('~') != std::string::npos || temp)
+            continue;
+        const std::string path = dir + "/" + name;
+        struct stat st {};
+        if (stat(path.c_str(), &st) != 0) continue;
+        for (char c : path) hash = hash * 1099511628211ull ^ (unsigned char)c;
+#ifdef __APPLE__
+        const long long mtime_ns = (long long)st.st_mtimespec.tv_sec * 1000000000ll + st.st_mtimespec.tv_nsec;
+#else
+        const long long mtime_ns = (long long)st.st_mtim.tv_sec * 1000000000ll + st.st_mtim.tv_nsec;
+#endif
+        hash = hash * 1099511628211ull ^ (unsigned long long)mtime_ns;
+        hash = hash * 1099511628211ull ^ (unsigned long long)st.st_size;
+        if (S_ISDIR(st.st_mode)) fingerprint(path, depth + 1, hash, budget);
+    }
+    closedir(d);
+}
+
+} // namespace
+
+// Without ReadDirectoryChangesW, the folder is scanned twice a second and the
+// page reloads when the fingerprint moves. A site folder is small enough for
+// that to cost nothing; the budget keeps a huge one from costing much.
+void LiveServer::watch_loop() {
+    const std::string root = root_;
+    auto scan = [&root] {
+        unsigned long long hash = 1469598103934665603ull;
+        int budget = 20000;
+        fingerprint(root, 0, hash, budget);
+        return hash;
+    };
+    unsigned long long last = scan();
+    while (!stopping_.load()) {
+        for (int i = 0; i < 5 && !stopping_.load(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (stopping_.load()) break;
+        const unsigned long long now = scan();
+        if (now != last) {
+            last = now;
+            token_.fetch_add(1);
+        }
+    }
+}
+#endif
 
 // ------------------------------------------------------------------ serving
 
@@ -564,24 +772,19 @@ bool LiveServer::resolve(const std::string& url_path, std::wstring& out_file, bo
     }
 
     std::wstring candidate = root_w_ + sys::widen(rel);
-    std::replace(candidate.begin(), candidate.end(), L'/', L'\\');
+    std::replace(candidate.begin(), candidate.end(), L'/', kSep);
 
-    wchar_t full[MAX_PATH * 4];
-    const DWORD n = GetFullPathNameW(candidate.c_str(),
-                                     (DWORD)(sizeof(full) / sizeof(full[0])), full, nullptr);
-    if (n == 0 || n >= sizeof(full) / sizeof(full[0])) return false;
+    std::wstring resolved;
+    if (!full_path(candidate, resolved)) return false;
 
     // The canonical path must still start with the canonical root: this is the
     // check that actually keeps the server inside the folder.
-    const std::wstring resolved = full;
-    const std::wstring lr = lower_w(root_w_), lf = lower_w(resolved);
+    const std::wstring lr = fold(root_w_), lf = fold(resolved);
     const std::wstring root_no_slash = lr.substr(0, lr.size() - 1);
     if (lf != root_no_slash && (lf.size() < lr.size() || lf.compare(0, lr.size(), lr) != 0))
         return false;
 
-    DWORD attrs = 0;
-    if (!attrs_of(resolved, attrs)) return false;
-    is_dir = (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    if (!path_info(resolved, is_dir)) return false;
     out_file = resolved;
     return true;
 }
@@ -589,7 +792,12 @@ bool LiveServer::resolve(const std::string& url_path, std::wstring& out_file, bo
 void LiveServer::serve(uintptr_t raw) {
     const SOCKET s = (SOCKET)raw;
 
+#ifdef _WIN32
     DWORD timeout = 5000;
+#else
+    timeval timeout{};
+    timeout.tv_sec = 5;
+#endif
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
     setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
 
@@ -681,9 +889,9 @@ void LiveServer::serve(uintptr_t raw) {
         std::string elsewhere;
         for (const sys::DirEntry& e : entries) {
             if (!e.is_dir) continue;
-            DWORD sub = 0;
-            const std::wstring candidate = file + L"\\" + sys::widen(e.name) + L"\\index.html";
-            if (attrs_of(candidate, sub) && !(sub & FILE_ATTRIBUTE_DIRECTORY)) {
+            bool sub_is_dir = false;
+            const std::wstring candidate = file + kSep + sys::widen(e.name) + kSep + L"index.html";
+            if (path_info(candidate, sub_is_dir) && !sub_is_dir) {
                 if (!elsewhere.empty()) elsewhere += ", ";
                 elsewhere += "<a href=\"" + url_encode_path(e.name) + "/\">" +
                              html_escape(e.name) + "/</a>";
@@ -745,26 +953,19 @@ void LiveServer::serve(uintptr_t raw) {
     }
 
     // --- everything else is streamed, so a large video costs no memory ---
-    HANDLE h = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) {
+    InFile in;
+    if (!in.open(file)) {
         send_simple(s, 403, "text/plain; charset=utf-8", "That file could not be read.", head_only);
         return;
     }
-    LARGE_INTEGER file_size{};
-    if (!GetFileSizeEx(h, &file_size)) {
-        CloseHandle(h);
-        send_simple(s, 403, "text/plain; charset=utf-8", "That file could not be read.", head_only);
-        return;
-    }
+    const long long file_size = in.size();
 
-    long long first = 0, last = file_size.QuadPart - 1;
+    long long first = 0, last = file_size - 1;
     bool partial = false;
 
     // Range requests are what let a <video> seek instead of restarting.
     const std::string lower_head = to_lower(head.substr(0, head_end));
-    if (const size_t r = lower_head.find("\r\nrange:"); r != std::string::npos &&
-                                                        file_size.QuadPart > 0) {
+    if (const size_t r = lower_head.find("\r\nrange:"); r != std::string::npos && file_size > 0) {
         const size_t value = lower_head.find("bytes=", r);
         const size_t eol = lower_head.find("\r\n", r + 2);
         if (value != std::string::npos && value < eol) {
@@ -777,21 +978,19 @@ void LiveServer::serve(uintptr_t raw) {
                 if (a.empty() && !b.empty()) { // the last N bytes
                     const long long len = atoll(b.c_str());
                     if (len <= 0) ok = false;
-                    else first = std::max<long long>(0, file_size.QuadPart - len);
+                    else first = std::max<long long>(0, file_size - len);
                 } else if (!a.empty()) {
                     first = atoll(a.c_str());
                     if (!b.empty()) last = atoll(b.c_str());
                 } else {
                     ok = false;
                 }
-                if (ok && first <= last && first < file_size.QuadPart) {
-                    last = std::min<long long>(last, file_size.QuadPart - 1);
+                if (ok && first <= last && first < file_size) {
+                    last = std::min<long long>(last, file_size - 1);
                     partial = true;
                 } else {
                     char extra[96];
-                    std::snprintf(extra, sizeof(extra), "Content-Range: bytes */%lld\r\n",
-                                  (long long)file_size.QuadPart);
-                    CloseHandle(h);
+                    std::snprintf(extra, sizeof(extra), "Content-Range: bytes */%lld\r\n", file_size);
                     send_simple(s, 416, "text/plain; charset=utf-8", "", head_only, extra);
                     return;
                 }
@@ -804,29 +1003,23 @@ void LiveServer::serve(uintptr_t raw) {
     if (partial) {
         char buf[128];
         std::snprintf(buf, sizeof(buf), "Content-Range: bytes %lld-%lld/%lld\r\n", first, last,
-                      (long long)file_size.QuadPart);
+                      file_size);
         extra = buf;
     }
     if (!send_all(s, header_block(partial ? 206 : 200, mime_for(path_utf8), length, extra)) ||
-        head_only) {
-        CloseHandle(h);
+        head_only)
         return;
-    }
-
-    LARGE_INTEGER seek{};
-    seek.QuadPart = first;
-    SetFilePointerEx(h, seek, nullptr, FILE_BEGIN);
+    if (!in.seek(first)) return;
 
     std::vector<char> chunk_buf(kStreamChunk);
     long long remaining = length;
     while (remaining > 0) {
-        const DWORD want = (DWORD)std::min<long long>(remaining, (long long)chunk_buf.size());
-        DWORD got = 0;
-        if (!ReadFile(h, chunk_buf.data(), want, &got, nullptr) || got == 0) break;
+        const size_t want = (size_t)std::min<long long>(remaining, (long long)chunk_buf.size());
+        const size_t got = in.read(chunk_buf.data(), want);
+        if (got == 0) break;
         if (!send_all(s, chunk_buf.data(), got)) break;
-        remaining -= got;
+        remaining -= (long long)got;
     }
-    CloseHandle(h);
 }
 
 } // namespace web

@@ -2,11 +2,34 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <string>
+#include <unordered_map>
 
 #include "imgui_internal.h"
 
 namespace ui {
+
+const char* keys(const char* text) {
+#ifdef __APPLE__
+    if (!text || (!std::strstr(text, "trl+") && !std::strstr(text, "lt+"))) return text;
+    // Keyed by content, not pointer: tooltips pass strings that do not live
+    // long, and the set of distinct shortcut texts is small.
+    static std::unordered_map<std::string, std::string> cache;
+    auto it = cache.find(text);
+    if (it != cache.end()) return it->second.c_str();
+    std::string s = text;
+    const char* from[] = {"Ctrl+", "ctrl+", "Alt+", "alt+"};
+    const char* to[] = {"Cmd+", "cmd+", "Opt+", "opt+"};
+    for (int k = 0; k < 4; ++k)
+        for (size_t at = s.find(from[k]); at != std::string::npos; at = s.find(from[k], at + std::strlen(to[k])))
+            s.replace(at, std::strlen(from[k]), to[k]);
+    return cache.emplace(text, s).first->second.c_str();
+#else
+    return text;
+#endif
+}
 
 Palette C;
 FontSet F;
@@ -14,6 +37,7 @@ static float g_scale = 1.0f;
 
 static float g_code_font_size = 14.0f;
 static bool g_font_rebuild = false;
+static float g_font_density = 1.0f;
 
 float scale() { return g_scale; }
 void set_scale(float s) { g_scale = s; }
@@ -21,6 +45,7 @@ void set_scale(float s) { g_scale = s; }
 float code_font_size() { return g_code_font_size; }
 void set_code_font_size(float size) { g_code_font_size = ImClamp(size, 6.0f, 48.0f); }
 void request_font_rebuild() { g_font_rebuild = true; }
+void set_font_density(float density) { g_font_density = ImClamp(density, 1.0f, 4.0f); }
 bool take_font_rebuild() {
     const bool r = g_font_rebuild;
     g_font_rebuild = false;
@@ -208,16 +233,26 @@ static const ImWchar* build_glyph_ranges() {
 }
 
 // Picks the first font that exists on this machine. The lists are ordered
-// best-first, so a user who installs a nicer mono gets it automatically.
+// best-first, so a user who installs a nicer mono gets it automatically. A
+// "#n" suffix picks face n out of a collection (.ttc).
 static ImFont* load_first(const char* const* candidates, float size,
                           const ImFontConfig* cfg) {
     ImGuiIO& io = ImGui::GetIO();
     for (const char* const* p = candidates; *p; ++p) {
+        std::string path = *p;
+        ImFontConfig face = *cfg;
+        if (const size_t hash = path.rfind('#'); hash != std::string::npos) {
+            face.FontNo = std::atoi(path.c_str() + hash + 1);
+            path.resize(hash);
+        }
+        // Sharp on a Retina screen: rasterized at the pixel density, laid out
+        // in points.
+        face.RasterizerDensity = g_font_density;
         // AddFontFromFileTTF asserts on a missing file in debug builds, so
         // check readability ourselves before handing the path to ImGui.
-        if (FILE* f = fopen(*p, "rb")) {
+        if (FILE* f = fopen(path.c_str(), "rb")) {
             fclose(f);
-            if (ImFont* font = io.Fonts->AddFontFromFileTTF(*p, size, cfg)) return font;
+            if (ImFont* font = io.Fonts->AddFontFromFileTTF(path.c_str(), size, &face)) return font;
         }
     }
     return nullptr;
@@ -236,6 +271,15 @@ static const char* kMonoFonts[] = {
     "C:/Windows/Fonts/IBMPlexMono-Regular.ttf",
     "C:/Windows/Fonts/consola.ttf",
     "C:/Windows/Fonts/lucon.ttf",
+    // macOS: SF Mono ships with the system, Menlo and Monaco are the fallbacks.
+    "/System/Library/Fonts/SFNSMono.ttf",
+    "/Library/Fonts/SF-Mono-Regular.otf",
+    "/System/Library/Fonts/Menlo.ttc#0",
+    "/System/Library/Fonts/Monaco.ttf",
+    // Linux
+    "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
     nullptr};
 
 static const char* kMonoBoldFonts[] = {
@@ -243,6 +287,10 @@ static const char* kMonoBoldFonts[] = {
     "C:/Windows/Fonts/CascadiaMono-Bold.ttf",
     "C:/Windows/Fonts/JetBrainsMono-Bold.ttf",
     "C:/Windows/Fonts/consolab.ttf",
+    "/Library/Fonts/SF-Mono-Bold.otf",
+    "/System/Library/Fonts/Menlo.ttc#1",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
     nullptr};
 
 static const char* kUiFonts[] = {
@@ -1030,6 +1078,7 @@ float pane_title(int index, const char* name, const char* detail) {
 }
 
 void tooltip(const char* text) {
+    text = keys(text);
     ImGui::PushFont(F.ui_small);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(9.0f), px(6.0f)));
     ImGui::SetTooltip("%s", text);
