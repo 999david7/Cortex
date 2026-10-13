@@ -2,11 +2,11 @@
 #
 #   Windows (w64devkit or any MinGW-w64 g++):
 #     build.bat            release build -> build/AI-IDE.exe
-#   macOS (Xcode command line tools, GLFW):
+#   macOS (Xcode command line tools, GLFW; drawn with Metal):
 #     make                 -> build/cortex
 #     make app             -> build/Cortex.app
 #     make dmg             -> build/Cortex-<version>.dmg
-#   Linux (GLFW, libcurl):
+#   Linux (GLFW, libcurl; drawn with OpenGL 3):
 #     make                 -> build/cortex
 #   Everywhere:
 #     make DEBUG=1         debug build
@@ -66,8 +66,7 @@ else
   else
     CXXFLAGS += -O2 -DNDEBUG
   endif
-  IMGUI_SRC := $(IMGUI_CORE) $(IMGUI)/backends/imgui_impl_glfw.cpp \
-               $(IMGUI)/backends/imgui_impl_opengl3.cpp
+  IMGUI_SRC := $(IMGUI_CORE) $(IMGUI)/backends/imgui_impl_glfw.cpp
 
   # GLFW comes from pkg-config, or from GLFW_PREFIX when it was built by hand
   # (the release build uses a static, universal copy so the app needs nothing
@@ -86,13 +85,16 @@ else
     ARCH_FLAGS := $(foreach a,$(ARCHS),-arch $(a)) -mmacosx-version-min=$(MACOS_MIN)
     CXXFLAGS   += $(ARCH_FLAGS) -DGL_SILENCE_DEPRECATION
     LDFLAGS    := $(ARCH_FLAGS)
-    MM_SRC     := src/sys_mac.mm
-    # What a static GLFW needs from the system, plus OpenGL itself.
-    MAC_FRAMEWORKS := -framework Cocoa -framework OpenGL -framework IOKit \
-                      -framework CoreFoundation -framework CoreVideo -framework QuartzCore
+    # Drawn with Metal: main_mac.mm and ImGui's Metal backend.
+    MM_SRC     := src/main_mac.mm src/sys_mac.mm $(IMGUI)/backends/imgui_impl_metal.mm
+    # Metal, plus what a static GLFW needs from the system.
+    MAC_FRAMEWORKS := -framework Cocoa -framework Metal -framework QuartzCore -framework IOKit \
+                      -framework CoreFoundation -framework CoreVideo -framework OpenGL
     LIBS       := $(GLFW_LIBS) -lcurl $(MAC_FRAMEWORKS)
     TEST_LIBS  := $(ARCH_FLAGS)
   else
+    # Drawn with OpenGL 3: main_glfw.cpp and ImGui's OpenGL backend.
+    IMGUI_SRC  += $(IMGUI)/backends/imgui_impl_opengl3.cpp
     LDFLAGS    :=
     LIBS       := $(GLFW_LIBS) -lGL -lcurl -lpthread -ldl
     TEST_LIBS  :=

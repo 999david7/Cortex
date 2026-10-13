@@ -4818,8 +4818,10 @@ void App::draw_about_modal() {
     ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::C.text_dim),
                        "A local-first code editor in C++ that talks to your own models.");
     ui::vspace(6);
-#ifdef _WIN32
+#if defined(_WIN32)
     ImGui::Text("Rendering: Direct3D 11 + Dear ImGui");
+#elif defined(__APPLE__)
+    ImGui::Text("Rendering: Metal + GLFW + Dear ImGui");
 #else
     ImGui::Text("Rendering: OpenGL 3 + GLFW + Dear ImGui");
 #endif

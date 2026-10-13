@@ -355,7 +355,8 @@ Pointing `ollama_host` at another machine works too (for example
 | File | Purpose |
 | --- | --- |
 | `src/main.cpp` | Win32 frameless window, Direct3D 11 device, frame loop |
-| `src/main_glfw.cpp` | macOS / Linux: GLFW window, OpenGL 3 context, frame loop |
+| `src/main_mac.mm` | macOS: GLFW window drawn with Metal, frame loop |
+| `src/main_glfw.cpp` | Linux: GLFW window, OpenGL 3 context, frame loop |
 | `src/app.cpp/.h` | The IDE: layout, explorer, tabs, chat, terminal, settings |
 | `src/texteditor.cpp/.h` | The code editor widget: multiple cursors, editing commands, find/replace, minimap, syntax tokenizer |
 | `src/palette.cpp` | Command palette, quick open, go to line/symbol and the status-bar pickers |
@@ -381,7 +382,8 @@ snapshot, so streaming never blocks the frame loop.
 
 - Windows and macOS are the supported platforms; Linux builds and runs from source.
   The editor, UI and AI layers are shared; each platform has its own window,
-  rendering, file dialogs, processes, HTTP client and live-server plumbing.
+  rendering (Direct3D 11, Metal, OpenGL 3), file dialogs, processes, HTTP client
+  and live-server plumbing.
 - The macOS app is signed ad hoc, not notarized, so Gatekeeper asks once before the
   first launch (see *Installing on macOS*).
 - The font atlas covers Latin-1, Latin Extended-A and common punctuation. Files with

@@ -1,6 +1,7 @@
-// Entry point for macOS and Linux: a GLFW window, an OpenGL 3 context and the
-// ImGui loop. main.cpp is the Win32/Direct3D 11 version.
-#ifndef _WIN32
+// Entry point for Linux: a GLFW window, an OpenGL 3 context and the ImGui
+// loop. main.cpp is the Win32/Direct3D 11 version, main_mac.mm the macOS
+// GLFW/Metal one.
+#if !defined(_WIN32) && !defined(__APPLE__)
 
 #include <csignal>
 #include <cstdio>
@@ -13,6 +14,7 @@
 #include <GLFW/glfw3.h>
 
 #include "app.h"
+#include "bmp.h"
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_opengl3.h"
@@ -26,20 +28,13 @@ app::App* g_app = nullptr;
 bool g_fonts_dirty = false;
 std::string g_ini_path;
 
-// Sizes and rasterization for the current display. On macOS the window is
-// measured in points and a Retina screen has two pixels per point, so layout
-// stays at 1x and only the glyphs are rendered denser. X11 measures in
-// pixels, so there the content scale enlarges the layout itself.
+// X11 measures windows in pixels, so a high-density screen's content scale
+// enlarges the layout itself (macOS works in points instead; see main_mac.mm).
 void font_metrics(GLFWwindow* window, float& layout_scale, float& density) {
     float sx = 1.0f, sy = 1.0f;
     glfwGetWindowContentScale(window, &sx, &sy);
-#ifdef __APPLE__
-    layout_scale = 1.0f;
-    density = sx > 0.0f ? sx : 1.0f;
-#else
     layout_scale = sx > 0.0f ? sx : 1.0f;
     density = 1.0f;
-#endif
 }
 
 void load_fonts_for(GLFWwindow* window) {
@@ -51,50 +46,13 @@ void load_fonts_for(GLFWwindow* window) {
 }
 
 // The same 24-bit BMP the Windows build writes for --screenshot, read back
-// from the OpenGL framebuffer. CI uses it to look at the real window.
+// from the OpenGL framebuffer.
 bool save_framebuffer_bmp(const std::string& path, int w, int h) {
     if (w <= 0 || h <= 0) return false;
     std::vector<unsigned char> rgba((size_t)w * h * 4, 0);
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
     glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
-    // OpenGL rows already run bottom-up, as BMP wants; the pixels go from
-    // RGBA to padded BGR rows.
-    const int row = w * 3;
-    const int pad = (4 - (row % 4)) % 4;
-    const int stride = row + pad;
-    std::vector<unsigned char> rgb((size_t)stride * h, 0);
-    for (int y = 0; y < h; ++y) {
-        const unsigned char* s = rgba.data() + (size_t)y * w * 4;
-        unsigned char* p = rgb.data() + (size_t)y * stride;
-        for (int x = 0; x < w; ++x) {
-            p[x * 3 + 0] = s[x * 4 + 2];
-            p[x * 3 + 1] = s[x * 4 + 1];
-            p[x * 3 + 2] = s[x * 4 + 0];
-        }
-    }
-    const int image_bytes = stride * h;
-    const int file_size = 54 + image_bytes;
-    unsigned char header[54] = {0};
-    auto put32 = [&](int at, int v) {
-        header[at] = (unsigned char)v;
-        header[at + 1] = (unsigned char)(v >> 8);
-        header[at + 2] = (unsigned char)(v >> 16);
-        header[at + 3] = (unsigned char)(v >> 24);
-    };
-    header[0] = 'B';
-    header[1] = 'M';
-    put32(2, file_size);
-    header[10] = 54;
-    header[14] = 40;
-    put32(18, w);
-    put32(22, h);
-    header[26] = 1;
-    header[28] = 24;
-    put32(34, image_bytes);
-    std::string blob((const char*)header, sizeof(header));
-    blob.append((const char*)rgb.data(), rgb.size());
-    std::string err;
-    return sys::write_file(path, blob, err);
+    return bmp::save(path, w, h, rgba.data(), false, false); // GL rows run bottom-up
 }
 
 void on_glfw_error(int code, const char* message) {
@@ -113,19 +71,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-#ifdef __APPLE__
-    // macOS offers OpenGL 3.2+ only as a forward-compatible core profile.
-    const char* glsl_version = "#version 150";
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-    glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GL_TRUE);
-#else
     const char* glsl_version = "#version 130";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-#endif
     glfwWindowHint(GLFW_MAXIMIZED, GLFW_FALSE);
 
     GLFWwindow* window = glfwCreateWindow(1440, 900, "Cortex", nullptr, nullptr);
@@ -181,10 +129,9 @@ int main(int argc, char** argv) {
     // Moving the window to a screen with another density rebuilds the fonts.
     glfwSetWindowContentScaleCallback(window, [](GLFWwindow*, float, float) { g_fonts_dirty = true; });
 
-    // Command line: any plain argument is a file or folder to open. macOS adds
-    // a -psn_ argument when an app is started from Finder on old systems; like
-    // every other dash argument it is skipped. --screenshot <path> [frames]
-    // renders that many frames, saves the framebuffer and quits.
+    // Command line: any plain argument is a file or folder to open.
+    // --screenshot <path> [frames] renders that many frames, saves the
+    // framebuffer and quits.
     std::string shot_path;
     int shot_after = 60;
     for (int i = 1; i < argc; ++i) {
@@ -247,4 +194,4 @@ int main(int argc, char** argv) {
     return 0;
 }
 
-#endif // !_WIN32
+#endif // Linux
