@@ -234,7 +234,9 @@ make dmg        # build/Cortex-<version>.dmg, the app next to an Applications li
 `make dmg ARCHS="arm64 x86_64" GLFW_PREFIX=<static universal GLFW>` is how the
 release is built: one binary for both kinds of Mac, with nothing to install. The
 GitHub Actions workflow in `.github/workflows/build.yml` does exactly that on
-every push, and publishes a release when a `v*` tag is pushed.
+every push, and publishes a release when a `v*` tag is pushed — or when it is
+run by hand from the Actions tab with **release** ticked, which tags the commit
+`v<VERSION>` itself.
 
 On Linux, with `libglfw3-dev` and `libcurl4-openssl-dev`, `make` builds
 `build/cortex` (file dialogs use `zenity` when it is installed).
