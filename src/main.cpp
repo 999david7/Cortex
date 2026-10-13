@@ -426,6 +426,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             create_render_target();
         }
 
+        if (ui::take_font_rebuild()) g_fonts_dirty = true; // editor zoom
         if (g_fonts_dirty) {
             g_fonts_dirty = false;
             ui::apply_style(g_dpi_scale);

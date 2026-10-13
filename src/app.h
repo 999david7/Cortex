@@ -1,8 +1,10 @@
 // The IDE: window layout, editor tabs, file explorer, terminal and AI chat.
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -54,6 +56,22 @@ struct Settings {
     bool indent_guides = true;
     bool auto_close_brackets = true;
     bool highlight_current_line = true;
+
+    // The caret and the editor surface. The names in brackets are the VS Code
+    // settings each one mirrors.
+    int cursor_style = 0;          // ed::CursorStyle  (editor.cursorStyle)
+    int cursor_blinking = 0;       // ed::CursorBlink  (editor.cursorBlinking)
+    int cursor_width = 2;          // line caret width (editor.cursorWidth)
+    bool smooth_caret = false;     // (editor.cursorSmoothCaretAnimation)
+    int overtype_cursor_style = 1; // caret while Insert is toggled (editor.overtypeCursorStyle)
+    int render_whitespace = 2;     // ed::Whitespace   (editor.renderWhitespace)
+    bool minimap = true;
+    bool bracket_pair_colors = false;
+    bool match_brackets = true;
+    bool highlight_occurrences = true;
+    std::string rulers;            // comma-separated columns, e.g. "80, 120"
+    float editor_font_size = 14.0f;
+    std::vector<int> ruler_columns() const;
 
     // Live server: the port to try first, whether a page reloads by itself when
     // a file under the root changes, and whether starting it opens the browser.
@@ -163,6 +181,7 @@ private:
     void draw_chat_panel();
     void draw_terminal_panel();
     void draw_settings_modal();
+    void draw_editor_settings();
     void draw_shortcuts_modal();
     void draw_about_modal();
     void draw_welcome(const ImVec2& size);
@@ -176,6 +195,17 @@ private:
     void close_document(int index);
     int find_document(const std::string& path) const;
     void apply_editor_settings(Document* doc);
+    void save_all();
+    void revert_document(Document* doc);
+    // Closes every tab, every tab but the active one, or every saved tab. Tabs
+    // with unsaved edits are kept open rather than thrown away.
+    enum class CloseMode { All, Others, Saved, ToTheRight };
+    void close_documents(CloseMode mode, int pivot);
+    void reopen_closed_document();
+    void cycle_document(int direction);
+    void zoom_editor(int direction); // +1, -1, or 0 to reset
+    // Runs `fn` on the active editor and hands the keyboard back to it.
+    void editor_command(const std::function<void(ed::TextEditor&)>& fn);
 
     // --- explorer ---
     struct TreeNode {
@@ -324,6 +354,63 @@ private:
     // file — or on the site root when the current file is not a page.
     void open_live_preview();
 
+    // --- command palette / quick open ---
+    // One row of the palette: a command, a file, a line, a symbol or a choice
+    // in a picker. `run` does whatever choosing it means.
+    struct PaletteItem {
+        std::string label;
+        std::string detail;
+        std::string keys;
+        std::function<void()> run;
+        lang::Id file_lang = lang::Id::Count;
+        int score = 0;
+    };
+    // Opens the palette with a prefix: "" files, ">" commands, ":" go to line,
+    // "@" symbols in the open file, "?" help.
+    void open_palette(const std::string& prefix);
+    // Opens the palette as a list of choices (cursor style, language, ...).
+    void open_picker(const std::string& title, std::vector<PaletteItem> items, int selected = 0);
+    void draw_palette();
+    void build_commands();
+    void refresh_palette_view();
+    void scan_workspace_files();
+    void scan_files_in(const std::string& dir, const std::string& rel, int depth, int& budget);
+    void collect_symbols(std::vector<PaletteItem>& out);
+    void pick_language();
+    void pick_cursor_style(bool overtype);
+    void pick_cursor_blinking();
+    void pick_whitespace();
+    void pick_indentation();
+    void pick_line_endings();
+
+    // --- find in files ---
+    struct SearchHit {
+        std::string path;    // absolute
+        std::string rel;     // relative to the workspace, for display
+        int line = 0;        // 0-based
+        int column = 0;      // byte offset of the match
+        int length = 0;
+        std::string preview; // the line, trimmed for display
+        int preview_offset = 0; // where the match starts inside `preview`
+    };
+    // Runs on a worker thread; the UI copies hits out under the mutex.
+    struct SearchJob {
+        std::mutex mutex;
+        std::vector<SearchHit> hits;
+        std::atomic<bool> cancel{false};
+        std::atomic<bool> done{false};
+        std::atomic<int> files{0};
+        bool truncated = false;
+        std::string error;
+    };
+    void open_search_view();
+    void start_search();
+    static void run_search(std::shared_ptr<SearchJob> job, std::string root, std::string query,
+                           bool case_sensitive, bool whole_word, bool regex);
+    void update_search();
+    void draw_search_view();
+    void open_search_hit(const SearchHit& hit);
+
     // --- misc ---
     void toast(const std::string& text, bool error = false);
     void handle_shortcuts();
@@ -345,6 +432,8 @@ private:
     std::vector<std::unique_ptr<Document>> documents_;
     int active_doc_ = -1;
     int untitled_counter_ = 0;
+    std::vector<std::string> closed_paths_; // most recent last, for Ctrl+Shift+T
+    int tab_menu_doc_ = -1;
 
     // explorer
     std::string workspace_;
@@ -406,6 +495,46 @@ private:
     std::string terminal_output_;
     std::string terminal_command_;
     bool terminal_scroll_ = false;
+
+    // command palette
+    std::vector<PaletteItem> commands_;
+    std::vector<std::string> recent_commands_; // labels, most recent first
+    std::vector<std::string> workspace_files_; // relative paths
+    bool workspace_files_truncated_ = false;
+    std::string workspace_files_root_;
+    double workspace_files_time_ = -100.0;
+    std::vector<PaletteItem> symbol_cache_;
+    const void* symbol_cache_doc_ = nullptr;
+    unsigned symbol_cache_version_ = 0;
+    bool palette_cursor_end_ = false;
+    bool palette_open_ = false;
+    bool palette_focus_ = false;
+    int palette_frames_ = 0;
+    char palette_buffer_[256] = {0};
+    std::string palette_view_query_ = "\x01";
+    std::vector<PaletteItem> palette_view_;
+    int palette_selected_ = 0;
+    bool palette_scroll_ = false;
+    bool picker_active_ = false;
+    std::string picker_title_;
+    std::vector<PaletteItem> picker_items_;
+
+    // find in files
+    bool explorer_search_ = false;
+    bool search_focus_ = false;
+    char search_buffer_[256] = {0};
+    bool search_case_ = false;
+    bool search_word_ = false;
+    bool search_regex_ = false;
+    std::string search_ran_for_;
+    double search_edit_time_ = 0.0;
+    bool search_pending_ = false;
+    int search_files_ = 0;
+    std::shared_ptr<SearchJob> search_job_;
+    std::vector<SearchHit> search_hits_;
+    bool search_truncated_ = false;
+    std::string search_error_;
+    std::set<std::string> search_collapsed_; // files folded in the results
 
     // modals
     bool show_settings_ = false;

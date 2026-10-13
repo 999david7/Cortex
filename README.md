@@ -39,9 +39,50 @@ runs on your machine and the model runs on your machine.
   mark data: ochre for a warning, brick for an error
 - Line numbers, current-line highlight, indent guides, multi-line selection
 - Undo/redo with typing coalescing, auto-indent, bracket and quote auto-closing
-- Find with match highlighting and counter (`Ctrl+F`)
-- Comment toggling, line duplication, moving lines, indent/outdent of a selection
-- Tabbed documents with a modified marker, drag-and-drop file opening
+- Tabbed documents with a modified marker, drag-and-drop file opening; every
+  tab keeps its own scroll position
+
+**Cursors** (the VS Code set)
+- Six caret shapes — line, block, underline, thin line, block outline and thin
+  underline — and five blink animations: blink, smooth, phase, expand and
+  solid. A block caret knocks the character under it out in paper white
+- Caret width for the line shape, an optional smooth caret animation, and a
+  separate shape for overtype mode (`Insert`), which shows `OVR` in the status bar
+- Settings → Editor has a live sample of every shape; click one to choose it.
+  The same choices are in *View → Cursor* and the command palette
+- The pointer is an I-beam over the text
+- Multiple cursors: `Alt+Click` adds or removes one, `Ctrl+Alt+Up/Down` adds
+  one above or below, `Ctrl+D` adds the next occurrence, `Ctrl+Shift+L` selects
+  every occurrence, `Shift+Alt+I` puts one at the end of each selected line,
+  `Shift+Alt+Drag` makes a column (box) selection, `Ctrl+U` undoes the last
+  cursor change and `Escape` goes back to one
+- Everything works at every cursor: typing, auto-closing, Enter with
+  auto-indent, Backspace, word deletion, comments, indenting, moving and
+  copying lines, case transforms. Typing at many cursors is still one undo step
+- Pasting as many lines as there are cursors puts one line at each; copying
+  with nothing selected copies the line, and pasting it back inserts it as a
+  line above, as VS Code does
+
+**Editing tools**
+- Find and replace (`Ctrl+F` / `Ctrl+H`) with match case, whole word and
+  regular expressions (`$1` groups and `\n` in the replacement), `F3` /
+  `Shift+F3` to step, and find matches marked on the minimap
+- Find in files (`Ctrl+Shift+F`): a search view beside the file tree that walks
+  the folder on a background thread, groups hits by file and opens the match
+  on click
+- Line commands: delete line, insert line above/below, move and copy lines,
+  indent/outdent, join lines, toggle line and block comments
+- Sort lines ascending/descending, reverse lines, delete duplicate lines, trim
+  trailing whitespace, transpose characters, convert indentation to tabs or spaces
+- Transform to upper, lower, title, snake, camel, Pascal and kebab case
+- Expand/shrink selection (word → string → bracket contents → brackets → line →
+  file), select to bracket, jump to the matching bracket
+- Matching bracket highlight (strings and comments do not count), optional
+  bracket pair colours, highlight of the word under the caret elsewhere in view
+- Minimap with a draggable view slider, rulers at any columns, rendered
+  whitespace (none, boundary, selection, trailing or all)
+- `Ctrl+Backspace` / `Ctrl+Delete` delete by word, `Ctrl+Up/Down` scroll a line
+- Editor font zoom: `Ctrl+=`, `Ctrl+-`, `Ctrl+0` or `Ctrl+wheel`
 
 **AI (any Ollama model)**
 - Model picker fed live from `/api/tags` — every model you have installed shows up,
@@ -96,7 +137,20 @@ runs on your machine and the model runs on your machine.
   `LIVE <port>` while it runs
 
 **Workspace**
+- Command palette (`Ctrl+Shift+P` or `F1`) with every command and its
+  shortcut, fuzzy matched, recently used ones first
+- Quick open (`Ctrl+P`, or the box in the middle of the title bar): fuzzy file
+  search over the whole folder. In the same box `>` runs a command, `:` goes to
+  a line (`:120:8` for a column too) and `@` goes to a symbol in the open file
 - File tree with type-colored icons, lazy directory loading and a filter box
+- Menus in VS Code's order — File, Edit, Selection, View, Go, AI, Help — that
+  drop down from their names and follow the pointer once one is open
+- Tab context menu (close, close others, close to the right, close saved,
+  copy path, reveal), middle-click to close, `Ctrl+Tab` / `Ctrl+PageDown` to
+  cycle and `Ctrl+Shift+T` to reopen a closed tab; save all and revert file
+- Clickable status bar: language mode, line endings (LF/CRLF), indentation and
+  `Ln, Col` (go to line) each open a picker; cursor and selection counts show
+  next to them
 - Integrated terminal panel: run build/test commands in the workspace folder,
   output streamed live
 - Dockable, rearrangeable panels; the layout is remembered between sessions
@@ -142,6 +196,16 @@ make clean
 
 > If the link step fails with a permission error, the IDE is still running — close it first.
 
+Editor tests:
+
+```bash
+make test
+```
+
+They drive the real editor widget through ImGui frames with simulated keys and
+mouse — multiple cursors, line commands, find and replace, undo — and need no
+window or GPU, so they also build with a plain `g++` on Linux or macOS.
+
 ---
 
 ## Run
@@ -173,17 +237,43 @@ running, the status dot next to the model name is green and the model list fills
 
 ## Keyboard shortcuts
 
+`Help → Keyboard Shortcuts` lists them all in the app; the command palette shows
+each command's shortcut beside it.
+
 | Keys | Action |
 | --- | --- |
+| `Ctrl+Shift+P` / `F1` | Command palette |
+| `Ctrl+P` | Go to file (`>` commands, `:` line, `@` symbol, `?` help) |
+| `Ctrl+G` / `Ctrl+Shift+O` | Go to line / go to symbol in the file |
 | `Ctrl+N` / `Ctrl+O` / `Ctrl+K` | New file / open file / open folder |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / save as |
-| `Ctrl+W` | Close tab |
-| `Ctrl+F` | Find in file (`Enter` / `Shift+Enter` to step) |
+| `Ctrl+W` / `Ctrl+Shift+T` | Close tab / reopen the last closed tab |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab (also `Ctrl+PageDown` / `Ctrl+PageUp`) |
+| `Ctrl+F` / `Ctrl+H` | Find / replace (`Alt+C`, `Alt+W`, `Alt+R` toggle case, word, regex) |
+| `F3` / `Shift+F3` | Next / previous match |
+| `Ctrl+Shift+F` | Find in files |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
-| `Ctrl+D` | Duplicate line or selection |
-| `Ctrl+/` | Toggle comment |
-| `Tab` / `Shift+Tab` | Indent / outdent selection |
+| `Alt+Click` | Add or remove a cursor |
+| `Shift+Alt+Drag` | Column (box) selection |
+| `Ctrl+Alt+Up` / `Ctrl+Alt+Down` | Add a cursor above / below |
+| `Ctrl+D` | Add the next occurrence to the selection |
+| `Ctrl+Shift+L` / `Ctrl+F2` | Select all occurrences |
+| `Shift+Alt+I` | Cursors at the ends of the selected lines |
+| `Ctrl+U` | Undo the last cursor change |
+| `Escape` | Back to a single cursor |
+| `Shift+Alt+Right` / `Shift+Alt+Left` | Expand / shrink selection |
 | `Alt+Up` / `Alt+Down` | Move lines |
+| `Shift+Alt+Up` / `Shift+Alt+Down` | Copy lines up / down |
+| `Ctrl+Shift+K` | Delete line |
+| `Ctrl+Enter` / `Ctrl+Shift+Enter` | Insert line below / above |
+| `Ctrl+]` / `Ctrl+[` | Indent / outdent line |
+| `Tab` / `Shift+Tab` | Indent / outdent selection |
+| `Ctrl+/` / `Shift+Alt+A` | Toggle line comment / block comment |
+| `Ctrl+Shift+\` | Go to matching bracket |
+| `Ctrl+Backspace` / `Ctrl+Delete` | Delete word left / right |
+| `Ctrl+Up` / `Ctrl+Down` | Scroll one line |
+| `Insert` | Toggle overtype |
+| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Zoom the editor font in / out / reset |
 | `Alt+L` | Go live: serve the folder and open the browser |
 | `Ctrl+Space` | AI completion at the caret |
 | `Tab` (on a suggestion) | Accept the AI suggestion |
@@ -191,13 +281,19 @@ running, the status dot next to the model name is green and the model list fills
 | `Enter` / `Ctrl+Enter` | Send chat message / new line in the message |
 | `Ctrl+,` | Settings |
 
+`Ctrl+D` follows VS Code: it adds the next occurrence. Duplicating a line is
+`Shift+Alt+Down` (copy line down), or *Selection → Duplicate Selection*.
+
 ---
 
 ## Settings
 
 Everything is configurable from **File → Settings**: Ollama host, chat model,
 a separate completion model, temperature, top-p, context window, how much code is
-attached to a message, the system prompt, and the editor preferences.
+attached to a message, the system prompt, and the editor preferences — cursor
+style, blinking, width and animation, overtype cursor, minimap, rendered
+whitespace, bracket pair colours, bracket and occurrence highlights, rulers,
+font size, tab size and spaces.
 
 Configuration lives in `%APPDATA%\AI IDE\`:
 
@@ -217,7 +313,9 @@ Pointing `ollama_host` at another machine works too (for example
 | --- | --- |
 | `src/main.cpp` | Win32 frameless window, Direct3D 11 device, frame loop |
 | `src/app.cpp/.h` | The IDE: layout, explorer, tabs, chat, terminal, settings |
-| `src/texteditor.cpp/.h` | The code editor widget and the syntax tokenizer |
+| `src/texteditor.cpp/.h` | The code editor widget: multiple cursors, editing commands, find/replace, minimap, syntax tokenizer |
+| `src/palette.cpp` | Command palette, quick open, go to line/symbol and the status-bar pickers |
+| `src/search.cpp` | Find in files: the search view and its worker thread |
 | `src/lang.cpp/.h` | Language registry: detection, keywords, badges, colors |
 | `src/agenttext.cpp/.h` | Recovering tool calls from reply text; edit_file matching |
 | `src/ui.cpp/.h` | Palette, fonts, hand-drawn vector icons, shared widgets |
@@ -259,4 +357,3 @@ snapshot, so streaming never blocks the frame loop.
 - Inline completion is deliberately conservative: it asks the model for a short
   continuation and shows it as ghost text; nothing is inserted until you press `Tab`.
 - Files larger than 64 MB are refused by the editor.
->>>>>>> 31dc400 (Initial commit of the local Ollama Windows IDE.)

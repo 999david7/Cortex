@@ -12,8 +12,20 @@ Palette C;
 FontSet F;
 static float g_scale = 1.0f;
 
+static float g_code_font_size = 14.0f;
+static bool g_font_rebuild = false;
+
 float scale() { return g_scale; }
 void set_scale(float s) { g_scale = s; }
+
+float code_font_size() { return g_code_font_size; }
+void set_code_font_size(float size) { g_code_font_size = ImClamp(size, 6.0f, 48.0f); }
+void request_font_rebuild() { g_font_rebuild = true; }
+bool take_font_rebuild() {
+    const bool r = g_font_rebuild;
+    g_font_rebuild = false;
+    return r;
+}
 
 static ImU32 rgb(int r, int g, int b, int a = 255) {
     return IM_COL32(r, g, b, a);
@@ -268,7 +280,8 @@ void load_fonts(float s) {
     F.ui_micro = load_first(kMonoFonts, std::floor(10.0f * s), &mcfg);
     F.ui_large = load_first(kMonoBoldFonts, std::floor(17.0f * s), &mcfg);
 
-    F.mono       = load_first(kMonoFonts, std::floor(14.0f * s), &mcfg);
+    // Only the editor face follows the zoom; the chrome stays put.
+    F.mono       = load_first(kMonoFonts, std::floor(g_code_font_size * s), &mcfg);
     F.mono_small = load_first(kMonoFonts, std::floor(12.0f * s), &mcfg);
     F.mono_bold  = load_first(kMonoBoldFonts, std::floor(14.0f * s), &mcfg);
 

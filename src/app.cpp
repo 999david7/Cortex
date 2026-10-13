@@ -43,6 +43,25 @@ bool input_text_multiline(const char* label, std::string* str, const ImVec2& siz
                                      input_text_resize, &ud);
 }
 
+// A cell of a segmented switch in the house style: tracked capitals, filled
+// with ink when it is the active one.
+bool segment_toggle(const char* id, const char* label, bool active, float width) {
+    ImFont* f = ui::F.ui_micro ? ui::F.ui_micro : ui::F.ui_small;
+    const float fs = f->FontSize;
+    const float h = std::floor(fs + ui::px(12));
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const bool clicked = ImGui::InvisibleButton(id, ImVec2(width, h));
+    const bool hovered = ImGui::IsItemHovered();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (active) dl->AddRectFilled(p, ImVec2(p.x + width, p.y + h), ui::C.ink);
+    else if (hovered) dl->AddRectFilled(p, ImVec2(p.x + width, p.y + h), ui::C.bg_surface_hi);
+    dl->AddRect(p, ImVec2(p.x + width, p.y + h), active ? ui::C.ink : ui::C.border);
+    const float tw = ui::caps_width(f, fs, label);
+    ui::draw_caps(dl, f, fs, ImVec2(p.x + (width - tw) * 0.5f, p.y + (h - fs) * 0.5f),
+                  active ? ui::C.on_ink : (hovered ? ui::C.text : ui::C.text_dim), label);
+    return clicked;
+}
+
 // Two paths naming the same folder, allowing for case and a trailing separator.
 bool same_path(std::string a, std::string b) {
     auto tidy = [](std::string& p) {
@@ -389,6 +408,19 @@ bool Settings::load() {
     indent_guides = v["indent_guides"].as_bool(indent_guides);
     auto_close_brackets = v["auto_close_brackets"].as_bool(auto_close_brackets);
     highlight_current_line = v["highlight_current_line"].as_bool(highlight_current_line);
+    cursor_style = ImClamp(v["cursor_style"].as_int(cursor_style), 0, (int)ed::CursorStyle::Count - 1);
+    cursor_blinking = ImClamp(v["cursor_blinking"].as_int(cursor_blinking), 0, (int)ed::CursorBlink::Count - 1);
+    cursor_width = ImClamp(v["cursor_width"].as_int(cursor_width), 1, 8);
+    smooth_caret = v["smooth_caret"].as_bool(smooth_caret);
+    overtype_cursor_style = ImClamp(v["overtype_cursor_style"].as_int(overtype_cursor_style), 0,
+                                    (int)ed::CursorStyle::Count - 1);
+    render_whitespace = ImClamp(v["render_whitespace"].as_int(render_whitespace), 0, (int)ed::Whitespace::Count - 1);
+    minimap = v["minimap"].as_bool(minimap);
+    bracket_pair_colors = v["bracket_pair_colors"].as_bool(bracket_pair_colors);
+    match_brackets = v["match_brackets"].as_bool(match_brackets);
+    highlight_occurrences = v["highlight_occurrences"].as_bool(highlight_occurrences);
+    rulers = v["rulers"].as_string(rulers);
+    editor_font_size = ImClamp((float)v["editor_font_size"].as_double(editor_font_size), 8.0f, 36.0f);
     live_port = v["live_port"].as_int(live_port);
     live_reload = v["live_reload"].as_bool(live_reload);
     ui_scale = (float)v["ui_scale"].as_double(ui_scale);
@@ -426,6 +458,18 @@ bool Settings::save() const {
     v.set("indent_guides", js::Value(indent_guides));
     v.set("auto_close_brackets", js::Value(auto_close_brackets));
     v.set("highlight_current_line", js::Value(highlight_current_line));
+    v.set("cursor_style", js::Value(cursor_style));
+    v.set("cursor_blinking", js::Value(cursor_blinking));
+    v.set("cursor_width", js::Value(cursor_width));
+    v.set("smooth_caret", js::Value(smooth_caret));
+    v.set("overtype_cursor_style", js::Value(overtype_cursor_style));
+    v.set("render_whitespace", js::Value(render_whitespace));
+    v.set("minimap", js::Value(minimap));
+    v.set("bracket_pair_colors", js::Value(bracket_pair_colors));
+    v.set("match_brackets", js::Value(match_brackets));
+    v.set("highlight_occurrences", js::Value(highlight_occurrences));
+    v.set("rulers", js::Value(rulers));
+    v.set("editor_font_size", js::Value((double)editor_font_size));
     v.set("live_port", js::Value(live_port));
     v.set("live_reload", js::Value(live_reload));
     v.set("ui_scale", js::Value((double)ui_scale));
@@ -441,6 +485,24 @@ bool Settings::save() const {
     return sys::write_file(path(), v.dump(2), err);
 }
 
+std::vector<int> Settings::ruler_columns() const {
+    std::vector<int> out;
+    int value = 0;
+    bool in_number = false;
+    for (char c : rulers + ",") {
+        if (c >= '0' && c <= '9') {
+            value = value * 10 + (c - '0');
+            in_number = true;
+            if (value > 1000) value = 1000;
+        } else if (in_number) {
+            if (value > 0) out.push_back(value);
+            value = 0;
+            in_number = false;
+        }
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------- lifecycle
 
 App::App() = default;
@@ -454,6 +516,17 @@ void App::init(void* hwnd, WindowHooks hooks, float dpi_scale) {
     settings_.load();
     client_.set_host(settings_.ollama_host);
     refresh_models(false);
+
+    // Ctrl+Tab belongs to the editor tabs, as in VS Code, not to ImGui's own
+    // window switcher.
+    if (ImGuiContext* ctx = ImGui::GetCurrentContext()) {
+        ctx->ConfigNavWindowingKeyNext = 0;
+        ctx->ConfigNavWindowingKeyPrev = 0;
+    }
+    if (settings_.editor_font_size != ui::code_font_size()) {
+        ui::set_code_font_size(settings_.editor_font_size);
+        ui::request_font_rebuild();
+    }
 
     if (!settings_.last_folder.empty() && sys::is_directory(settings_.last_folder))
         set_workspace(settings_.last_folder);
@@ -492,6 +565,24 @@ void App::apply_editor_settings(Document* doc) {
     doc->editor.show_indent_guides = settings_.indent_guides;
     doc->editor.auto_close_brackets = settings_.auto_close_brackets;
     doc->editor.highlight_current_line = settings_.highlight_current_line;
+    doc->editor.cursor_style = (ed::CursorStyle)settings_.cursor_style;
+    doc->editor.cursor_blink = (ed::CursorBlink)settings_.cursor_blinking;
+    doc->editor.cursor_width = settings_.cursor_width;
+    doc->editor.smooth_caret = settings_.smooth_caret;
+    doc->editor.overtype_cursor_style = (ed::CursorStyle)settings_.overtype_cursor_style;
+    doc->editor.render_whitespace = (ed::Whitespace)settings_.render_whitespace;
+    doc->editor.show_minimap = settings_.minimap;
+    doc->editor.bracket_pair_colors = settings_.bracket_pair_colors;
+    doc->editor.match_brackets = settings_.match_brackets;
+    doc->editor.highlight_occurrences = settings_.highlight_occurrences;
+    doc->editor.rulers = settings_.ruler_columns();
+}
+
+void App::editor_command(const std::function<void(ed::TextEditor&)>& fn) {
+    Document* doc = active_document();
+    if (!doc) return;
+    fn(doc->editor);
+    doc->editor.request_focus();
 }
 
 int App::find_document(const std::string& path) const {
@@ -509,6 +600,7 @@ void App::new_document() {
     doc->editor.set_language(ed::Language::PlainText);
     doc->scroll_to_tab = true;
     apply_editor_settings(doc.get());
+    doc->editor.request_focus();
     documents_.push_back(std::move(doc));
     active_doc_ = (int)documents_.size() - 1;
 }
@@ -563,9 +655,105 @@ void App::save_document(Document* doc, bool save_as) {
 
 void App::close_document(int index) {
     if (index < 0 || index >= (int)documents_.size()) return;
+    const std::string path = documents_[index]->path;
+    if (!path.empty()) {
+        closed_paths_.erase(std::remove(closed_paths_.begin(), closed_paths_.end(), path),
+                            closed_paths_.end());
+        closed_paths_.push_back(path);
+        if (closed_paths_.size() > 30) closed_paths_.erase(closed_paths_.begin());
+    }
     documents_.erase(documents_.begin() + index);
+    if (index < active_doc_) --active_doc_;
     if (documents_.empty()) active_doc_ = -1;
     else active_doc_ = ImClamp(active_doc_, 0, (int)documents_.size() - 1);
+}
+
+void App::close_documents(CloseMode mode, int pivot) {
+    int kept_unsaved = 0;
+    for (int i = (int)documents_.size() - 1; i >= 0; --i) {
+        const bool modified = documents_[i]->editor.modified();
+        bool close = false;
+        switch (mode) {
+            case CloseMode::All:        close = true; break;
+            case CloseMode::Others:     close = i != pivot; break;
+            case CloseMode::Saved:      close = !modified; break;
+            case CloseMode::ToTheRight: close = i > pivot; break;
+        }
+        if (!close) continue;
+        if (modified) {
+            ++kept_unsaved;
+            continue;
+        }
+        close_document(i);
+    }
+    if (kept_unsaved > 0)
+        toast(std::to_string(kept_unsaved) + (kept_unsaved == 1 ? " tab has" : " tabs have") +
+              " unsaved changes and stayed open");
+}
+
+void App::reopen_closed_document() {
+    while (!closed_paths_.empty()) {
+        const std::string path = closed_paths_.back();
+        closed_paths_.pop_back();
+        if (sys::file_exists(path)) {
+            open_file(path);
+            return;
+        }
+    }
+    toast("No recently closed files");
+}
+
+void App::cycle_document(int direction) {
+    if (documents_.empty()) return;
+    const int n = (int)documents_.size();
+    active_doc_ = ((active_doc_ < 0 ? 0 : active_doc_) + direction + n) % n;
+    documents_[active_doc_]->scroll_to_tab = true;
+    documents_[active_doc_]->editor.request_focus();
+}
+
+void App::save_all() {
+    int saved = 0;
+    for (auto& d : documents_) {
+        if (!d->editor.modified() || d->path.empty()) continue;
+        std::string err;
+        if (sys::write_file(d->path, d->editor.text(), err)) {
+            d->editor.mark_saved();
+            ++saved;
+        } else {
+            toast("Save failed for " + d->display_name + ": " + err, true);
+        }
+    }
+    if (saved > 0) {
+        live_.notify_changed();
+        toast("Saved " + std::to_string(saved) + (saved == 1 ? " file" : " files"));
+    } else {
+        toast("Nothing to save");
+    }
+}
+
+void App::revert_document(Document* doc) {
+    if (!doc || doc->path.empty()) return;
+    std::string content, err;
+    if (!sys::read_file(doc->path, content, err)) {
+        toast("Could not read " + doc->display_name + ": " + err, true);
+        return;
+    }
+    // Undoable, so a revert by mistake costs one Ctrl+Z.
+    doc->editor.replace_all_text(content);
+    doc->editor.mark_saved();
+    toast("Reverted " + doc->display_name);
+}
+
+void App::zoom_editor(int direction) {
+    float size = direction == 0 ? 14.0f : settings_.editor_font_size + (float)direction;
+    size = ImClamp(size, 8.0f, 36.0f);
+    if (size == settings_.editor_font_size && direction != 0) return;
+    settings_.editor_font_size = size;
+    ui::set_code_font_size(size);
+    ui::request_font_rebuild();
+    char msg[48];
+    std::snprintf(msg, sizeof(msg), "Editor font %d px", (int)size);
+    toast(msg);
 }
 
 void App::open_path(const std::string& path) {
@@ -737,6 +925,26 @@ void App::draw_explorer() {
                 if (ImGui::IsItemHovered()) ui::tooltip(folder.c_str());
             }
         }
+        ui::pane_frame();
+        ImGui::End();
+        return;
+    }
+
+    // Files or search, the two views VS Code keeps in its sidebar.
+    {
+        const float half = std::floor((ImGui::GetContentRegionAvail().x - 1.0f) * 0.5f);
+        if (segment_toggle("##view_files", "files", !explorer_search_, half)) explorer_search_ = false;
+        ImGui::SameLine(0, 0);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() - 1.0f);
+        if (segment_toggle("##view_search", "search", explorer_search_, half + 1.0f)) {
+            explorer_search_ = true;
+            search_focus_ = true;
+        }
+        if (ImGui::IsItemHovered()) ui::tooltip("Find in files (Ctrl+Shift+F)");
+        ui::vspace(6);
+    }
+    if (explorer_search_) {
+        draw_search_view();
         ui::pane_frame();
         ImGui::End();
         return;
@@ -953,10 +1161,46 @@ void App::draw_editor_panel() {
                 active_doc_ = i;
                 ImGui::SetScrollHereX(0.5f);
             }
-            if (cell.clicked) active_doc_ = i;
+            if (cell.clicked) {
+                active_doc_ = i;
+                doc->editor.request_focus();
+            }
             if (cell.close_clicked) close_request = i;
+            if (cell.hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) close_request = i;
+            if (cell.hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                tab_menu_doc_ = i;
+                ImGui::OpenPopup("##tabmenu");
+            }
             if (cell.hovered && !doc->path.empty()) ui::tooltip(doc->path.c_str());
         }
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::px(8), ui::px(6)));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::px(8), ui::px(8)));
+        if (ImGui::BeginPopup("##tabmenu")) {
+            ImGui::PushFont(ui::F.ui);
+            const int t = tab_menu_doc_;
+            const bool valid = t >= 0 && t < (int)documents_.size();
+            const bool has_path = valid && !documents_[t]->path.empty();
+            if (ImGui::MenuItem("Close", "Ctrl+W", false, valid)) close_request = t;
+            if (ImGui::MenuItem("Close Others", nullptr, false, valid && documents_.size() > 1))
+                close_documents(CloseMode::Others, t);
+            if (ImGui::MenuItem("Close to the Right", nullptr, false, valid && t + 1 < (int)documents_.size()))
+                close_documents(CloseMode::ToTheRight, t);
+            if (ImGui::MenuItem("Close Saved")) close_documents(CloseMode::Saved, t);
+            if (ImGui::MenuItem("Close All")) close_documents(CloseMode::All, t);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Copy Path", nullptr, false, has_path))
+                ImGui::SetClipboardText(documents_[t]->path.c_str());
+            if (ImGui::MenuItem("Copy Relative Path", nullptr, false, has_path))
+                ImGui::SetClipboardText(display_path(documents_[t]->path, workspace_, 4096).c_str());
+            if (ImGui::MenuItem("Reveal in Explorer", nullptr, false, has_path))
+                sys::open_in_explorer(documents_[t]->path);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Reopen Closed Editor", "Ctrl+Shift+T", false, !closed_paths_.empty()))
+                reopen_closed_document();
+            ImGui::PopFont();
+            ImGui::EndPopup();
+        }
+        ImGui::PopStyleVar(2);
         ImGui::EndChild();
         ImGui::PopStyleVar(2);
         // The rail is closed by a full-width rule, the way the reference closes
@@ -1036,7 +1280,11 @@ void App::draw_editor_panel() {
         ui::vspace(3);
 
         ImVec2 avail = ImGui::GetContentRegionAvail();
-        doc->editor.render("##code", avail);
+        // One view per document, so every tab keeps its own scroll position.
+        char code_id[40];
+        std::snprintf(code_id, sizeof(code_id), "##code%p", (void*)doc);
+        doc->editor.render(code_id, avail);
+        if (const int zoom = doc->editor.take_zoom_request()) zoom_editor(zoom);
     }
 
     ui::pane_frame();
@@ -3665,6 +3913,38 @@ void App::draw_title_bar() {
         right = ui::segment_r(dl, right, seg_top, seg_h, ws.c_str(), 0, ui::C.text);
     }
 
+    // The command centre, as in VS Code's title bar: a quiet box in the middle
+    // that opens quick open, with the palette one keystroke away.
+    {
+        const float space_left = menus_right + ui::px(24);
+        const float space_right = right - ui::px(24);
+        const float box_w = ImMin(ui::px(340), space_right - space_left);
+        if (box_w >= ui::px(150)) {
+            const float box_h = ui::px(24);
+            const float bx = std::floor(space_left + (space_right - space_left - box_w) * 0.5f);
+            const float by = std::floor(origin.y + (h - box_h) * 0.5f);
+            ImGui::SetCursorScreenPos(ImVec2(bx, by));
+            if (ImGui::InvisibleButton("##commandcenter", ImVec2(box_w, box_h))) open_palette("");
+            const bool hot = ImGui::IsItemHovered();
+            if (hot) ui::tooltip("Go to file (Ctrl+P) · commands (Ctrl+Shift+P)");
+            dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + box_w, by + box_h),
+                              hot ? ui::C.bg_surface_hi : ui::C.bg_surface);
+            dl->AddRect(ImVec2(bx, by), ImVec2(bx + box_w, by + box_h), hot ? ui::C.border_strong : ui::C.border);
+            const float icon = ui::px(11);
+            ui::draw_icon(dl, ui::Icon::Search, ImVec2(bx + ui::px(9), by + (box_h - icon) * 0.5f), icon,
+                          ui::C.text_dim);
+            ImFont* cf = ui::F.ui_micro ? ui::F.ui_micro : ui::F.ui_small;
+            const char* label = "go to file";
+            ui::draw_caps(dl, cf, cf->FontSize, ImVec2(bx + ui::px(26), by + (box_h - cf->FontSize) * 0.5f),
+                          ui::C.text_dim, label);
+            const char* hint = "ctrl+p";
+            const float hw = ui::caps_width(cf, cf->FontSize, hint);
+            ui::draw_caps(dl, cf, cf->FontSize,
+                          ImVec2(bx + box_w - hw - ui::px(9), by + (box_h - cf->FontSize) * 0.5f),
+                          ui::C.text_faint, hint);
+        }
+    }
+
     // caption drag zone: anywhere in the bar that is not a widget or a module
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     const bool in_bar = mouse.y >= origin.y && mouse.y < origin.y + h && mouse.x >= origin.x &&
@@ -3679,24 +3959,35 @@ void App::draw_title_bar() {
 void App::draw_menus() {
     struct MenuDef { const char* label; const char* id; };
     const MenuDef menus[] = {{"File", "##menu_file"}, {"Edit", "##menu_edit"},
-                             {"View", "##menu_view"}, {"AI", "##menu_ai"},
-                             {"Help", "##menu_help"}};
+                             {"Selection", "##menu_selection"}, {"View", "##menu_view"},
+                             {"Go", "##menu_go"}, {"AI", "##menu_ai"}, {"Help", "##menu_help"}};
+    const int menu_count = (int)(sizeof(menus) / sizeof(menus[0]));
 
     // Section names, not buttons: tracked capitals with nothing drawn around
     // them until the pointer is over one, and an underline on the open menu.
     ImFont* mf = ui::F.ui_micro ? ui::F.ui_micro : ui::F.ui_small;
     const float mfs = mf ? mf->FontSize : ImGui::GetFontSize();
     const float mh = std::floor(mfs + ui::px(14));
-    const float mpad = ui::px(11);
+    const float mpad = ui::px(9);
     ImDrawList* mdl = ImGui::GetWindowDrawList();
 
-    for (int i = 0; i < 5; ++i) {
-        if (i) ImGui::SameLine(0, ui::px(2));
+    // Each menu drops down from under its own name.
+    ImVec2 anchors[sizeof(menus) / sizeof(menus[0])];
+    // Once one menu is open, moving across the bar opens its neighbours.
+    bool any_open = false;
+    for (int i = 0; i < menu_count; ++i) any_open = any_open || ImGui::IsPopupOpen(menus[i].id);
+
+    for (int i = 0; i < menu_count; ++i) {
+        if (i) ImGui::SameLine(0, ui::px(1));
         const float tw = ui::caps_width(mf, mfs, menus[i].label);
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const ImVec2 sz(tw + mpad * 2, mh);
         if (ImGui::InvisibleButton(menus[i].id, sz)) ImGui::OpenPopup(menus[i].id);
-        const bool hovered = ImGui::IsItemHovered();
+        const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup);
+        if (any_open && hovered && !ImGui::IsPopupOpen(menus[i].id)) {
+            ImGui::CloseCurrentPopup();
+            ImGui::OpenPopup(menus[i].id);
+        }
         const bool open = ImGui::IsPopupOpen(menus[i].id);
         if (hovered || open)
             mdl->AddRectFilled(p, ImVec2(p.x + sz.x, p.y + sz.y), ui::C.bg_surface_hi);
@@ -3705,12 +3996,22 @@ void App::draw_menus() {
                                ImVec2(p.x + sz.x, p.y + sz.y), ui::C.ink);
         ui::draw_caps(mdl, mf, mfs, ImVec2(p.x + mpad, p.y + (sz.y - mfs) * 0.5f),
                       hovered || open ? ui::C.text : ui::C.text_dim, menus[i].label);
+        anchors[i] = ImVec2(p.x, p.y + sz.y);
     }
 
     Document* doc = active_document();
+    const bool has_doc = doc != nullptr;
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::px(8), ui::px(6)));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::px(8), ui::px(8)));
 
+    // An editor command as a menu item: greyed out without a file, and the
+    // keyboard goes back to the editor afterwards.
+    auto edit_item = [&](const char* label, const char* keys,
+                         const std::function<void(ed::TextEditor&)>& fn) {
+        if (ImGui::MenuItem(label, keys, false, has_doc)) editor_command(fn);
+    };
+
+    ImGui::SetNextWindowPos(anchors[0]);
     if (ImGui::BeginPopup("##menu_file")) {
         if (ImGui::MenuItem("New File", "Ctrl+N")) new_document();
         if (ImGui::MenuItem("Open File…", "Ctrl+O")) {
@@ -3726,40 +4027,159 @@ void App::draw_menus() {
                 if (ImGui::MenuItem(folder.c_str())) set_workspace(folder);
             ImGui::EndMenu();
         }
+        if (ImGui::MenuItem("Reopen Closed Editor", "Ctrl+Shift+T", false, !closed_paths_.empty()))
+            reopen_closed_document();
         ImGui::Separator();
-        if (ImGui::MenuItem("Save", "Ctrl+S", false, doc != nullptr)) save_document(doc, false);
-        if (ImGui::MenuItem("Save As…", "Ctrl+Shift+S", false, doc != nullptr))
-            save_document(doc, true);
-        if (ImGui::MenuItem("Close Tab", "Ctrl+W", false, doc != nullptr))
-            close_document(active_doc_);
+        if (ImGui::MenuItem("Save", "Ctrl+S", false, has_doc)) save_document(doc, false);
+        if (ImGui::MenuItem("Save As…", "Ctrl+Shift+S", false, has_doc)) save_document(doc, true);
+        if (ImGui::MenuItem("Save All", nullptr, false, has_doc)) save_all();
+        if (ImGui::MenuItem("Revert File", nullptr, false, has_doc && !doc->path.empty()))
+            revert_document(doc);
         ImGui::Separator();
-        if (ImGui::MenuItem("Settings…")) show_settings_ = true;
+        if (ImGui::MenuItem("Close Tab", "Ctrl+W", false, has_doc)) close_document(active_doc_);
+        if (ImGui::MenuItem("Close Other Tabs", nullptr, false, documents_.size() > 1))
+            close_documents(CloseMode::Others, active_doc_);
+        if (ImGui::MenuItem("Close All Tabs", nullptr, false, has_doc))
+            close_documents(CloseMode::All, active_doc_);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Settings…", "Ctrl+,")) show_settings_ = true;
         if (ImGui::MenuItem("Exit", "Alt+F4")) should_exit_ = true;
         ImGui::EndPopup();
     }
 
+    ImGui::SetNextWindowPos(anchors[1]);
     if (ImGui::BeginPopup("##menu_edit")) {
-        bool has_doc = doc != nullptr;
         if (ImGui::MenuItem("Undo", "Ctrl+Z", false, has_doc && doc->editor.can_undo()))
-            doc->editor.undo();
+            editor_command([](ed::TextEditor& e) { e.undo(); });
         if (ImGui::MenuItem("Redo", "Ctrl+Y", false, has_doc && doc->editor.can_redo()))
-            doc->editor.redo();
+            editor_command([](ed::TextEditor& e) { e.redo(); });
         ImGui::Separator();
-        if (ImGui::MenuItem("Find…", "Ctrl+F", false, has_doc)) doc->editor.open_find();
-        if (ImGui::MenuItem("Select All", "Ctrl+A", false, has_doc)) doc->editor.select_all();
-        if (ImGui::MenuItem("Toggle Comment", "Ctrl+/", false, has_doc)) {
-            // handled inside the editor; nothing to do when it is not focused
+        edit_item("Cut", "Ctrl+X", [](ed::TextEditor& e) { e.cut(); });
+        edit_item("Copy", "Ctrl+C", [](ed::TextEditor& e) { e.copy(); });
+        edit_item("Paste", "Ctrl+V", [](ed::TextEditor& e) { e.paste(); });
+        ImGui::Separator();
+        edit_item("Find", "Ctrl+F", [](ed::TextEditor& e) { e.open_find(); });
+        edit_item("Replace", "Ctrl+H", [](ed::TextEditor& e) { e.open_replace(); });
+        if (ImGui::MenuItem("Find in Files", "Ctrl+Shift+F", false, !workspace_.empty())) open_search_view();
+        ImGui::Separator();
+        edit_item("Toggle Line Comment", "Ctrl+/", [](ed::TextEditor& e) { e.toggle_line_comment(); });
+        edit_item("Toggle Block Comment", "Shift+Alt+A", [](ed::TextEditor& e) { e.toggle_block_comment(); });
+        if (ImGui::BeginMenu("Lines", has_doc)) {
+            edit_item("Delete Line", "Ctrl+Shift+K", [](ed::TextEditor& e) { e.delete_lines(); });
+            edit_item("Insert Line Below", "Ctrl+Enter", [](ed::TextEditor& e) { e.insert_line_below(); });
+            edit_item("Insert Line Above", "Ctrl+Shift+Enter", [](ed::TextEditor& e) { e.insert_line_above(); });
+            edit_item("Indent Line", "Ctrl+]", [](ed::TextEditor& e) { e.indent_lines(); });
+            edit_item("Outdent Line", "Ctrl+[", [](ed::TextEditor& e) { e.outdent_lines(); });
+            edit_item("Join Lines", nullptr, [](ed::TextEditor& e) { e.join_lines(); });
+            ImGui::Separator();
+            edit_item("Sort Lines Ascending", nullptr, [](ed::TextEditor& e) { e.sort_lines(false); });
+            edit_item("Sort Lines Descending", nullptr, [](ed::TextEditor& e) { e.sort_lines(true); });
+            edit_item("Reverse Lines", nullptr, [](ed::TextEditor& e) { e.reverse_lines(); });
+            edit_item("Delete Duplicate Lines", nullptr, [](ed::TextEditor& e) { e.delete_duplicate_lines(); });
+            edit_item("Trim Trailing Whitespace", nullptr, [](ed::TextEditor& e) { e.trim_trailing_whitespace(); });
+            ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("Transform", has_doc)) {
+            for (int k = 0; k < (int)ed::CaseKind::Count; ++k) {
+                const ed::CaseKind kind = (ed::CaseKind)k;
+                std::string label = std::string("To ") + ed::case_name(kind);
+                edit_item(label.c_str(), nullptr, [kind](ed::TextEditor& e) { e.transform_case(kind); });
+            }
+            ImGui::Separator();
+            edit_item("Transpose Characters", nullptr, [](ed::TextEditor& e) { e.transpose_chars(); });
+            edit_item("Convert Indentation to Spaces", nullptr,
+                      [](ed::TextEditor& e) { e.convert_indentation(false); });
+            edit_item("Convert Indentation to Tabs", nullptr,
+                      [](ed::TextEditor& e) { e.convert_indentation(true); });
+            ImGui::EndMenu();
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Toggle Overtype", "Insert", has_doc && doc->editor.overtype(), has_doc))
+            editor_command([](ed::TextEditor& e) { e.toggle_overtype(); });
         ImGui::EndPopup();
     }
 
+    ImGui::SetNextWindowPos(anchors[2]);
+    if (ImGui::BeginPopup("##menu_selection")) {
+        edit_item("Select All", "Ctrl+A", [](ed::TextEditor& e) { e.select_all(); });
+        edit_item("Expand Selection", "Shift+Alt+Right", [](ed::TextEditor& e) { e.expand_selection(); });
+        edit_item("Shrink Selection", "Shift+Alt+Left", [](ed::TextEditor& e) { e.shrink_selection(); });
+        edit_item("Expand Line Selection", nullptr, [](ed::TextEditor& e) { e.select_line(); });
+        edit_item("Select to Bracket", nullptr, [](ed::TextEditor& e) { e.select_to_bracket(); });
+        ImGui::Separator();
+        edit_item("Copy Line Up", "Shift+Alt+Up", [](ed::TextEditor& e) { e.copy_lines(-1); });
+        edit_item("Copy Line Down", "Shift+Alt+Down", [](ed::TextEditor& e) { e.copy_lines(1); });
+        edit_item("Move Line Up", "Alt+Up", [](ed::TextEditor& e) { e.move_lines(-1); });
+        edit_item("Move Line Down", "Alt+Down", [](ed::TextEditor& e) { e.move_lines(1); });
+        edit_item("Duplicate Selection", nullptr, [](ed::TextEditor& e) { e.duplicate_selection(); });
+        ImGui::Separator();
+        edit_item("Add Cursor Above", "Ctrl+Alt+Up", [](ed::TextEditor& e) { e.add_caret_vertical(-1); });
+        edit_item("Add Cursor Below", "Ctrl+Alt+Down", [](ed::TextEditor& e) { e.add_caret_vertical(1); });
+        edit_item("Add Cursors to Line Ends", "Shift+Alt+I", [](ed::TextEditor& e) { e.carets_to_line_ends(); });
+        edit_item("Add Next Occurrence", "Ctrl+D", [](ed::TextEditor& e) { e.add_next_occurrence(); });
+        edit_item("Select All Occurrences", "Ctrl+Shift+L", [](ed::TextEditor& e) { e.select_all_occurrences(); });
+        edit_item("Cursor Undo", "Ctrl+U", [](ed::TextEditor& e) { e.cursor_undo(); });
+        ImGui::Separator();
+        ImGui::PushFont(ui::F.ui_small);
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::C.text_faint),
+                           "Alt+Click adds a cursor, Shift+Alt+Drag selects a column");
+        ImGui::PopFont();
+        ImGui::EndPopup();
+    }
+
+    ImGui::SetNextWindowPos(anchors[3]);
     if (ImGui::BeginPopup("##menu_view")) {
+        if (ImGui::MenuItem("Command Palette…", "Ctrl+Shift+P")) open_palette(">");
+        ImGui::Separator();
+        if (ImGui::BeginMenu("Cursor")) {
+            if (ImGui::BeginMenu("Style")) {
+                for (int k = 0; k < (int)ed::CursorStyle::Count; ++k)
+                    if (ImGui::MenuItem(ed::cursor_style_name((ed::CursorStyle)k), nullptr,
+                                        settings_.cursor_style == k))
+                        settings_.cursor_style = k;
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Blinking")) {
+                for (int k = 0; k < (int)ed::CursorBlink::Count; ++k)
+                    if (ImGui::MenuItem(ed::cursor_blink_name((ed::CursorBlink)k), nullptr,
+                                        settings_.cursor_blinking == k))
+                        settings_.cursor_blinking = k;
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Overtype Style")) {
+                for (int k = 0; k < (int)ed::CursorStyle::Count; ++k)
+                    if (ImGui::MenuItem(ed::cursor_style_name((ed::CursorStyle)k), nullptr,
+                                        settings_.overtype_cursor_style == k))
+                        settings_.overtype_cursor_style = k;
+                ImGui::EndMenu();
+            }
+            if (ImGui::MenuItem("Smooth Caret Animation", nullptr, settings_.smooth_caret))
+                settings_.smooth_caret = !settings_.smooth_caret;
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Render Whitespace")) {
+            for (int k = 0; k < (int)ed::Whitespace::Count; ++k)
+                if (ImGui::MenuItem(ed::whitespace_name((ed::Whitespace)k), nullptr, settings_.render_whitespace == k))
+                    settings_.render_whitespace = k;
+            ImGui::EndMenu();
+        }
+        if (ImGui::MenuItem("Minimap", nullptr, settings_.minimap)) settings_.minimap = !settings_.minimap;
+        if (ImGui::MenuItem("Bracket Pair Colors", nullptr, settings_.bracket_pair_colors))
+            settings_.bracket_pair_colors = !settings_.bracket_pair_colors;
+        if (ImGui::MenuItem("Matching Brackets", nullptr, settings_.match_brackets))
+            settings_.match_brackets = !settings_.match_brackets;
+        if (ImGui::MenuItem("Occurrence Highlight", nullptr, settings_.highlight_occurrences))
+            settings_.highlight_occurrences = !settings_.highlight_occurrences;
         if (ImGui::MenuItem("Line Numbers", nullptr, settings_.show_line_numbers))
             settings_.show_line_numbers = !settings_.show_line_numbers;
         if (ImGui::MenuItem("Indent Guides", nullptr, settings_.indent_guides))
             settings_.indent_guides = !settings_.indent_guides;
         if (ImGui::MenuItem("Highlight Current Line", nullptr, settings_.highlight_current_line))
             settings_.highlight_current_line = !settings_.highlight_current_line;
+        ImGui::Separator();
+        if (ImGui::MenuItem("Zoom In", "Ctrl+=")) zoom_editor(1);
+        if (ImGui::MenuItem("Zoom Out", "Ctrl+-")) zoom_editor(-1);
+        if (ImGui::MenuItem("Reset Zoom", "Ctrl+0")) zoom_editor(0);
         ImGui::Separator();
         if (live_.running()) {
             char label[64];
@@ -3781,8 +4201,23 @@ void App::draw_menus() {
         ImGui::EndPopup();
     }
 
+    ImGui::SetNextWindowPos(anchors[4]);
+    if (ImGui::BeginPopup("##menu_go")) {
+        if (ImGui::MenuItem("Go to File…", "Ctrl+P")) open_palette("");
+        if (ImGui::MenuItem("Go to Line…", "Ctrl+G", false, has_doc)) open_palette(":");
+        if (ImGui::MenuItem("Go to Symbol in File…", "Ctrl+Shift+O", false, has_doc)) open_palette("@");
+        edit_item("Go to Bracket", "Ctrl+Shift+\\", [](ed::TextEditor& e) { e.goto_matching_bracket(); });
+        ImGui::Separator();
+        edit_item("Next Match", "F3", [](ed::TextEditor& e) { e.find_next(); });
+        edit_item("Previous Match", "Shift+F3", [](ed::TextEditor& e) { e.find_previous(); });
+        ImGui::Separator();
+        if (ImGui::MenuItem("Next Tab", "Ctrl+Tab", false, documents_.size() > 1)) cycle_document(1);
+        if (ImGui::MenuItem("Previous Tab", "Ctrl+Shift+Tab", false, documents_.size() > 1)) cycle_document(-1);
+        ImGui::EndPopup();
+    }
+
+    ImGui::SetNextWindowPos(anchors[5]);
     if (ImGui::BeginPopup("##menu_ai")) {
-        bool has_doc = doc != nullptr;
         if (ImGui::MenuItem("Complete at Caret", "Ctrl+Space", false, has_doc))
             request_inline_completion();
         if (ImGui::MenuItem("Explain", "Ctrl+L", false, has_doc))
@@ -3808,7 +4243,9 @@ void App::draw_menus() {
         ImGui::EndPopup();
     }
 
+    ImGui::SetNextWindowPos(anchors[6]);
     if (ImGui::BeginPopup("##menu_help")) {
+        if (ImGui::MenuItem("Command Palette…", "Ctrl+Shift+P")) open_palette(">");
         if (ImGui::MenuItem("Keyboard Shortcuts")) show_shortcuts_ = true;
         if (ImGui::MenuItem("Ollama Website")) sys::open_url("https://ollama.com");
         if (ImGui::MenuItem("About")) show_about_ = true;
@@ -3842,15 +4279,55 @@ void App::draw_status_bar() {
         std::snprintf(live_cell, sizeof(live_cell), "live %d", live_.port());
         right = ui::segment_r(dl, right, origin.y, h, live_cell, ui::C.ink, ui::C.on_ink);
     }
+    // A status cell that does something when clicked, the way VS Code's do:
+    // a faint fill on hover, then the action.
+    auto clickable = [&](float new_right, float old_right, const char* id, const char* tip) {
+        const ImVec2 back = ImGui::GetCursorScreenPos();
+        ImGui::SetCursorScreenPos(ImVec2(new_right, origin.y));
+        const bool clicked = ImGui::InvisibleButton(id, ImVec2(ImMax(1.0f, old_right - new_right), h));
+        if (ImGui::IsItemHovered()) {
+            dl->AddRectFilled(ImVec2(new_right, origin.y + 1.0f), ImVec2(old_right, origin.y + h),
+                              ui::C.accent_soft);
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            ui::tooltip(tip);
+        }
+        ImGui::SetCursorScreenPos(back);
+        return clicked;
+    };
+
     if (doc) {
-        right = ui::segment_r(dl, right, origin.y, h,
-                              ed::language_name(doc->editor.language()), 0, ui::C.text_dim);
+        const ed::TextEditor& e = doc->editor;
+        float before = right;
+        right = ui::segment_r(dl, right, origin.y, h, ed::language_name(e.language()), 0, ui::C.text_dim);
+        if (clickable(right, before, "##sb_lang", "Select language mode")) pick_language();
+
+        before = right;
+        right = ui::segment_r(dl, right, origin.y, h, e.use_crlf() ? "crlf" : "lf", 0, ui::C.text_dim);
+        if (clickable(right, before, "##sb_eol", "Select end of line sequence")) pick_line_endings();
 
         char buf[96];
-        const ed::Coord c = doc->editor.cursor();
-        std::snprintf(buf, sizeof(buf), "%d:%d  %s%d", c.line + 1, c.column + 1,
-                      settings_.insert_spaces ? "spaces:" : "tabs:", settings_.tab_size);
+        std::snprintf(buf, sizeof(buf), "%s %d", settings_.insert_spaces ? "spaces:" : "tab size:",
+                      settings_.tab_size);
+        before = right;
         right = ui::segment_r(dl, right, origin.y, h, buf, 0, ui::C.text_dim);
+        if (clickable(right, before, "##sb_indent", "Select indentation")) pick_indentation();
+
+        const ed::Coord c = e.cursor();
+        std::snprintf(buf, sizeof(buf), "ln %d, col %d", c.line + 1, c.column + 1);
+        before = right;
+        right = ui::segment_r(dl, right, origin.y, h, buf, 0, ui::C.text_dim);
+        if (clickable(right, before, "##sb_line", "Go to line (Ctrl+G)")) open_palette(":");
+
+        const int selected = e.selected_chars();
+        if (e.caret_count() > 1) {
+            std::snprintf(buf, sizeof(buf), "%d cursors%s", e.caret_count(),
+                          selected > 0 ? (" · " + std::to_string(selected) + " sel").c_str() : "");
+            right = ui::segment_r(dl, right, origin.y, h, buf, ui::C.ink, ui::C.on_ink);
+        } else if (selected > 0) {
+            std::snprintf(buf, sizeof(buf), "%d selected", selected);
+            right = ui::segment_r(dl, right, origin.y, h, buf, 0, ui::C.text_dim);
+        }
+        if (e.overtype()) right = ui::segment_r(dl, right, origin.y, h, "ovr", ui::C.ink, ui::C.on_ink);
     }
 
     // Left block: the mode, filled with ink — the one solid mark down here —
@@ -4032,24 +4509,7 @@ void App::draw_settings_modal() {
         }
 
         if (ImGui::BeginTabItem("Editor")) {
-            ui::vspace(6);
-            ImGui::SliderInt("Tab size", &settings_.tab_size, 2, 8);
-            ImGui::Checkbox("Insert spaces instead of tabs", &settings_.insert_spaces);
-            ImGui::Checkbox("Show line numbers", &settings_.show_line_numbers);
-            ImGui::Checkbox("Show indent guides", &settings_.indent_guides);
-            ImGui::Checkbox("Auto-close brackets and quotes", &settings_.auto_close_brackets);
-            ImGui::Checkbox("Highlight the current line", &settings_.highlight_current_line);
-            ui::vspace(12);
-            ImGui::TextUnformatted("Default run command");
-            ImGui::SetNextItemWidth(-1);
-            static char cmd_buf[512];
-            if (ImGui::IsWindowAppearing())
-                std::snprintf(cmd_buf, sizeof(cmd_buf), "%s", terminal_command_.c_str());
-            if (ImGui::InputText("##runcmd", cmd_buf, sizeof(cmd_buf))) terminal_command_ = cmd_buf;
-            ImGui::PushFont(ui::F.ui_small);
-            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::C.text_faint),
-                               "Runs in the workspace folder from the Terminal panel.");
-            ImGui::PopFont();
+            draw_editor_settings();
             ImGui::EndTabItem();
         }
 
@@ -4126,6 +4586,136 @@ void App::draw_settings_modal() {
     ImGui::PopStyleVar();
 }
 
+void App::draw_editor_settings() {
+    ImGui::BeginChild("##editorsettings", ImVec2(0, ImGui::GetContentRegionAvail().y - ui::px(46)));
+    ui::vspace(6);
+
+    auto combo = [](const char* label, int* value, int count, const char* (*name)(int)) {
+        ImGui::SetNextItemWidth(ui::px(220));
+        if (ImGui::BeginCombo(label, name(*value))) {
+            for (int k = 0; k < count; ++k)
+                if (ImGui::Selectable(name(k), *value == k)) *value = k;
+            ImGui::EndCombo();
+        }
+    };
+    auto style_name = [](int k) { return ed::cursor_style_name((ed::CursorStyle)k); };
+    auto blink_name = [](int k) { return ed::cursor_blink_name((ed::CursorBlink)k); };
+    auto ws_name = [](int k) { return ed::whitespace_name((ed::Whitespace)k); };
+
+    ImGui::SeparatorText("Cursor");
+    combo("Cursor style", &settings_.cursor_style, (int)ed::CursorStyle::Count, style_name);
+    combo("Blinking", &settings_.cursor_blinking, (int)ed::CursorBlink::Count, blink_name);
+    ImGui::BeginDisabled(settings_.cursor_style != (int)ed::CursorStyle::Line);
+    ImGui::SetNextItemWidth(ui::px(220));
+    ImGui::SliderInt("Line width", &settings_.cursor_width, 1, 8, "%d px");
+    ImGui::EndDisabled();
+    combo("Overtype style", &settings_.overtype_cursor_style, (int)ed::CursorStyle::Count, style_name);
+    ImGui::Checkbox("Smooth caret animation", &settings_.smooth_caret);
+
+    // A live sample of every caret shape, the chosen one marked, blinking the
+    // way the editor will. Click one to choose it.
+    {
+        ui::vspace(4);
+        ImFont* mono = ui::F.mono;
+        ImFont* micro = ui::F.ui_micro ? ui::F.ui_micro : ui::F.ui_small;
+        const float fs = mono->FontSize;
+        const float lh = std::floor(fs * 1.55f);
+        const float cw = mono->GetCharAdvance('x');
+        const float pad = ui::px(10);
+        const int n = (int)ed::CursorStyle::Count;
+        float cell_w = cw * 6.0f;
+        for (int k = 0; k < n; ++k)
+            cell_w = ImMax(cell_w, ui::caps_width(micro, micro->FontSize, ed::cursor_style_name((ed::CursorStyle)k)));
+        cell_w = std::floor(cell_w + pad * 2.0f);
+        const float cell_h = std::floor(lh + micro->FontSize + ui::px(18));
+        const float gap = ui::px(4);
+        const int per_row = ImMax(1, (int)((ImGui::GetContentRegionAvail().x + gap) / (cell_w + gap)));
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        float alpha = 1.0f, height_scale = 1.0f;
+        ed::caret_blink_state((ed::CursorBlink)settings_.cursor_blinking, std::fmod(ImGui::GetTime(), 4.0),
+                              alpha, height_scale);
+        for (int k = 0; k < n; ++k) {
+            const ed::CursorStyle style = (ed::CursorStyle)k;
+            const ImVec2 q(p0.x + (k % per_row) * (cell_w + gap), p0.y + (k / per_row) * (cell_h + gap));
+            const bool chosen = k == settings_.cursor_style;
+            ImGui::SetCursorScreenPos(q);
+            ImGui::PushID(k);
+            if (ImGui::InvisibleButton("##caretsample", ImVec2(cell_w, cell_h))) settings_.cursor_style = k;
+            const bool hovered = ImGui::IsItemHovered();
+            ImGui::PopID();
+            dl->AddRect(q, ImVec2(q.x + cell_w, q.y + cell_h),
+                        chosen ? ui::C.ink : (hovered ? ui::C.border_strong : ui::C.border));
+            const ImVec2 tp(q.x + pad, q.y + ui::px(4));
+            const float ty = tp.y + std::floor((lh - fs) * 0.5f);
+            dl->AddText(mono, fs, ImVec2(tp.x, ty), ui::C.syn_default, "let x");
+            const float a = chosen ? alpha : 1.0f;
+            const ImVec2 at(tp.x + cw * 4.0f, tp.y);
+            ed::draw_caret_shape(dl, style, at, cw, lh, std::floor(ui::px((float)settings_.cursor_width) + 0.5f),
+                                 with_alpha(ui::C.cursor, (int)(255 * a)), chosen ? height_scale : 1.0f);
+            if (style == ed::CursorStyle::Block && a > 0.5f && (!chosen || height_scale >= 1.0f))
+                dl->AddText(mono, fs, ImVec2(at.x, ty), ui::C.on_ink, "x");
+            ui::draw_caps(dl, micro, micro->FontSize, ImVec2(tp.x, q.y + lh + ui::px(10)),
+                          chosen ? ui::C.text : ui::C.text_faint, ed::cursor_style_name(style));
+        }
+        const int rows = (n + per_row - 1) / per_row;
+        ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + rows * (cell_h + gap) + ui::px(4)));
+        ImGui::Dummy(ImVec2(1, 1));
+    }
+
+    ImGui::SeparatorText("Display");
+    ImGui::Checkbox("Minimap", &settings_.minimap);
+    combo("Render whitespace", &settings_.render_whitespace, (int)ed::Whitespace::Count, ws_name);
+    ImGui::Checkbox("Bracket pair colours", &settings_.bracket_pair_colors);
+    ImGui::Checkbox("Highlight matching brackets", &settings_.match_brackets);
+    ImGui::Checkbox("Highlight other occurrences of the word at the caret", &settings_.highlight_occurrences);
+    ImGui::Checkbox("Show line numbers", &settings_.show_line_numbers);
+    ImGui::Checkbox("Show indent guides", &settings_.indent_guides);
+    ImGui::Checkbox("Highlight the current line", &settings_.highlight_current_line);
+    {
+        static char rulers_buf[64];
+        if (ImGui::IsWindowAppearing())
+            std::snprintf(rulers_buf, sizeof(rulers_buf), "%s", settings_.rulers.c_str());
+        ImGui::SetNextItemWidth(ui::px(220));
+        if (ImGui::InputTextWithHint("Rulers", "e.g. 80, 120", rulers_buf, sizeof(rulers_buf)))
+            settings_.rulers = rulers_buf;
+    }
+    {
+        int size = (int)settings_.editor_font_size;
+        ImGui::SetNextItemWidth(ui::px(220));
+        ImGui::SliderInt("Font size", &size, 8, 36, "%d px");
+        if (size != (int)settings_.editor_font_size) settings_.editor_font_size = (float)size;
+        // Rebuilding the font atlas is not free, so it waits for the release.
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            ui::set_code_font_size(settings_.editor_font_size);
+            ui::request_font_rebuild();
+        }
+        ImGui::PushFont(ui::F.ui_small);
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::C.text_faint),
+                           "Ctrl+= / Ctrl+- / Ctrl+0, or Ctrl+wheel over the editor.");
+        ImGui::PopFont();
+    }
+
+    ImGui::SeparatorText("Typing");
+    ImGui::SetNextItemWidth(ui::px(220));
+    ImGui::SliderInt("Tab size", &settings_.tab_size, 2, 8);
+    ImGui::Checkbox("Insert spaces instead of tabs", &settings_.insert_spaces);
+    ImGui::Checkbox("Auto-close brackets and quotes", &settings_.auto_close_brackets);
+
+    ui::vspace(12);
+    ImGui::TextUnformatted("Default run command");
+    ImGui::SetNextItemWidth(-1);
+    static char cmd_buf[512];
+    if (ImGui::IsWindowAppearing())
+        std::snprintf(cmd_buf, sizeof(cmd_buf), "%s", terminal_command_.c_str());
+    if (ImGui::InputText("##runcmd", cmd_buf, sizeof(cmd_buf))) terminal_command_ = cmd_buf;
+    ImGui::PushFont(ui::F.ui_small);
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::C.text_faint),
+                       "Runs in the workspace folder from the Terminal panel.");
+    ImGui::PopFont();
+    ImGui::EndChild();
+}
+
 void App::draw_shortcuts_modal() {
     if (show_shortcuts_) {
         ImGui::OpenPopup("Keyboard Shortcuts###shortcuts");
@@ -4134,28 +4724,52 @@ void App::draw_shortcuts_modal() {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + vp->Size.y * 0.5f),
                             ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(ui::px(500), 0), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(ui::px(660), 0), ImGuiCond_Appearing);
     if (!ImGui::BeginPopupModal("Keyboard Shortcuts###shortcuts", nullptr,
                                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
         return;
 
     struct Row { const char* keys; const char* what; };
     const Row rows[] = {
+        {"Ctrl+Shift+P / F1", "Command palette"},
+        {"Ctrl+P", "Go to file (type > for commands, : for a line, @ for symbols)"},
+        {"Ctrl+G / Ctrl+Shift+O", "Go to line / go to symbol in the file"},
         {"Ctrl+N / Ctrl+O / Ctrl+K", "New file / open file / open folder"},
         {"Ctrl+S / Ctrl+Shift+S", "Save / save as"},
-        {"Ctrl+W", "Close the current tab"},
-        {"Ctrl+F", "Find in the current file"},
+        {"Ctrl+W / Ctrl+Shift+T", "Close the tab / reopen the last closed one"},
+        {"Ctrl+Tab / Ctrl+PageDown", "Next tab (with Shift, or PageUp: previous)"},
+        {"Ctrl+F / Ctrl+H", "Find / replace in the file (Alt+C, Alt+W, Alt+R toggle options)"},
+        {"F3 / Shift+F3", "Next / previous match"},
+        {"Ctrl+Shift+F", "Find in files"},
         {"Ctrl+Z / Ctrl+Y", "Undo / redo"},
-        {"Ctrl+D", "Duplicate the line or selection"},
-        {"Ctrl+/", "Toggle comment"},
-        {"Tab / Shift+Tab", "Indent / outdent the selection"},
+        {"Alt+Click", "Add or remove a cursor"},
+        {"Shift+Alt+Drag", "Column (box) selection"},
+        {"Ctrl+Alt+Up / Down", "Add a cursor above / below"},
+        {"Ctrl+D", "Add the next occurrence to the selection"},
+        {"Ctrl+Shift+L / Ctrl+F2", "Select every occurrence"},
+        {"Shift+Alt+I", "Put a cursor at the end of each selected line"},
+        {"Ctrl+U", "Undo the last cursor change"},
+        {"Escape", "Back to a single cursor"},
+        {"Shift+Alt+Right / Left", "Expand / shrink the selection"},
         {"Alt+Up / Alt+Down", "Move lines up or down"},
+        {"Shift+Alt+Up / Down", "Copy lines up or down"},
+        {"Ctrl+Shift+K", "Delete the line"},
+        {"Ctrl+Enter / Ctrl+Shift+Enter", "Insert a line below / above"},
+        {"Ctrl+] / Ctrl+[", "Indent / outdent the line"},
+        {"Tab / Shift+Tab", "Indent / outdent the selection"},
+        {"Ctrl+/ / Shift+Alt+A", "Toggle line comment / block comment"},
+        {"Ctrl+Shift+\\", "Jump to the matching bracket"},
+        {"Ctrl+Backspace / Ctrl+Delete", "Delete the word left / right"},
+        {"Ctrl+Up / Ctrl+Down", "Scroll by a line without moving the cursor"},
+        {"Insert", "Toggle overtype"},
+        {"Ctrl+= / Ctrl+- / Ctrl+0", "Zoom the editor font in / out / reset"},
         {"Alt+L", "Go live: serve the folder and open the browser"},
         {"Ctrl+Space", "Ask the model to complete at the caret"},
         {"Tab (on a suggestion)", "Accept the AI suggestion"},
         {"Ctrl+L", "Send the file or selection to the chat"},
-        {"Enter / Ctrl+Enter", "Send the chat message / new line"},
+        {"Ctrl+,", "Settings"},
     };
+    ImGui::BeginChild("##scrows", ImVec2(ui::px(620), ui::px(440)));
     ImGui::PushFont(ui::F.ui);
     if (ImGui::BeginTable("##sc", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
         for (const Row& r : rows) {
@@ -4170,6 +4784,7 @@ void App::draw_shortcuts_modal() {
         ImGui::EndTable();
     }
     ImGui::PopFont();
+    ImGui::EndChild();
     ui::vspace(10);
     if (ui::primary_button("Close", ImVec2(ui::px(110), 0))) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
@@ -4207,26 +4822,52 @@ void App::handle_shortcuts() {
     ImGuiIO& io = ImGui::GetIO();
     const bool ctrl = io.KeyCtrl;
     const bool shift = io.KeyShift;
+    const bool alt = io.KeyAlt;
     Document* doc = active_document();
 
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_N, false)) new_document();
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) {
+    // Exact modifiers, so the editor's Ctrl+Shift+K or Ctrl+Shift+L never also
+    // fires the app's Ctrl+K or Ctrl+L.
+    auto key = [&](ImGuiKey k, bool c, bool s, bool a, bool repeat = false) {
+        return ctrl == c && shift == s && alt == a && ImGui::IsKeyPressed(k, repeat);
+    };
+
+    if (key(ImGuiKey_P, true, true, false) || key(ImGuiKey_F1, false, false, false)) open_palette(">");
+    if (key(ImGuiKey_P, true, false, false)) open_palette("");
+    if (key(ImGuiKey_G, true, false, false) && doc) open_palette(":");
+    if (key(ImGuiKey_O, true, true, false) && doc) open_palette("@");
+    if (key(ImGuiKey_F, true, true, false)) open_search_view();
+
+    if (key(ImGuiKey_N, true, false, false)) new_document();
+    if (key(ImGuiKey_O, true, false, false)) {
         std::string path = sys::pick_open_file(hwnd_, workspace_dir_for_dialogs());
         if (!path.empty()) open_file(path);
     }
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_K, false)) {
+    if (key(ImGuiKey_K, true, false, false)) {
         std::string folder = sys::pick_folder(hwnd_, "Open Folder");
         if (!folder.empty()) set_workspace(folder);
     }
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) save_document(doc, shift);
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_W, false) && doc) close_document(active_doc_);
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Space, false)) request_inline_completion();
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_L, false) && doc) {
+    if (key(ImGuiKey_S, true, false, false)) save_document(doc, false);
+    if (key(ImGuiKey_S, true, true, false)) save_document(doc, true);
+    if (key(ImGuiKey_W, true, false, false) && doc) close_document(active_doc_);
+    if (key(ImGuiKey_T, true, true, false)) reopen_closed_document();
+    if (key(ImGuiKey_Tab, true, false, false, true) || key(ImGuiKey_PageDown, true, false, false, true))
+        cycle_document(1);
+    if (key(ImGuiKey_Tab, true, true, false, true) || key(ImGuiKey_PageUp, true, false, false, true))
+        cycle_document(-1);
+
+    if (ctrl && !alt && (ImGui::IsKeyPressed(ImGuiKey_Equal, true) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd, true)))
+        zoom_editor(1);
+    if (ctrl && !alt && (ImGui::IsKeyPressed(ImGuiKey_Minus, true) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract, true)))
+        zoom_editor(-1);
+    if (key(ImGuiKey_0, true, false, false) || key(ImGuiKey_Keypad0, true, false, false)) zoom_editor(0);
+
+    if (key(ImGuiKey_Space, true, false, false)) request_inline_completion();
+    if (key(ImGuiKey_L, true, false, false) && doc) {
         focus_chat_input_ = true;
         quick_action("Explain", "Explain what this code does, step by step.", true);
     }
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Comma, false)) show_settings_ = true;
-    if (io.KeyAlt && !ctrl && ImGui::IsKeyPressed(ImGuiKey_L, false)) open_live_preview();
+    if (key(ImGuiKey_Comma, true, false, false)) show_settings_ = true;
+    if (key(ImGuiKey_L, false, false, true)) open_live_preview();
 }
 
 // ------------------------------------------------------------------- frame
@@ -4234,6 +4875,7 @@ void App::handle_shortcuts() {
 void App::draw() {
     update_streams();
     update_process();
+    update_search();
     handle_shortcuts();
 
     title_bar_height_ = std::floor(ui::px(46.0f));
@@ -4302,6 +4944,7 @@ void App::draw() {
     draw_settings_modal();
     draw_shortcuts_modal();
     draw_about_modal();
+    draw_palette();
     draw_toasts();
 
     // Focus the editor once the layout has settled, so typing works immediately
@@ -4311,6 +4954,7 @@ void App::draw() {
     if (!initial_focus_done_ && ImGui::GetFrameCount() > 3) {
         initial_focus_done_ = true;
         ImGui::SetWindowFocus("Editor###editor");
+        if (Document* d = active_document()) d->editor.request_focus();
     }
 }
 

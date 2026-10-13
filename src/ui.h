@@ -80,6 +80,15 @@ void load_fonts(float scale);
 
 float scale();
 void set_scale(float s);
+
+// The code font's size before DPI scaling. The editor zooms by changing it and
+// asking for the font atlas to be rebuilt, which the frame loop does between
+// frames (fonts cannot change while one is being built).
+float code_font_size();
+void set_code_font_size(float size);
+void request_font_rebuild();
+// True once after request_font_rebuild(); the frame loop calls it every frame.
+bool take_font_rebuild();
 inline float px(float v) { return v * scale(); }
 
 // ---------------------------------------------------------------- lettering

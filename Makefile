@@ -1,6 +1,7 @@
 # AI IDE - build with w64devkit in tools/ (or any MinGW-w64 g++).
 #   build.bat            release build
 #   make DEBUG=1         debug build with a console window
+#   make test            build and run the editor tests
 
 CXX      ?= g++
 BUILD    := build
@@ -36,7 +37,23 @@ OBJ := $(patsubst %.cpp,$(BUILD)/%.o,$(APP_SRC) $(IMGUI_SRC))
 # struct layouts — which shows up as scrambled colours rather than as an error.
 DEP := $(OBJ:.o=.d)
 
-.PHONY: all clean run
+# The editor tests need only the editor, the language table, the UI palette
+# and the ImGui core: no window, no GPU, and no Windows unless the compiler
+# targets it.
+TEST_TARGET := $(BUILD)/test_editor.exe
+TEST_SRC := tests/test_editor.cpp src/texteditor.cpp src/lang.cpp src/ui.cpp \
+            $(IMGUI)/imgui.cpp $(IMGUI)/imgui_draw.cpp $(IMGUI)/imgui_tables.cpp \
+            $(IMGUI)/imgui_widgets.cpp
+TEST_OBJ := $(patsubst %.cpp,$(BUILD)/test/%.o,$(TEST_SRC))
+TEST_CXXFLAGS := -std=c++17 $(INCLUDES) -O1 -Wall -Wno-unused-parameter -MMD -MP
+TEST_LIBS :=
+ifneq (,$(findstring mingw,$(shell $(CXX) -dumpmachine)))
+  # ImGui's default clipboard and IME hooks use the Win32 API.
+  TEST_LIBS := -static -static-libgcc -static-libstdc++ -luser32 -limm32
+endif
+DEP += $(TEST_OBJ:.o=.d)
+
+.PHONY: all clean run test
 
 all: $(TARGET)
 
@@ -52,6 +69,18 @@ $(BUILD)/%.o: %.cpp
 
 run: $(TARGET)
 	@./$(TARGET)
+
+$(BUILD)/test/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	@echo [test] $<
+	@$(CXX) $(TEST_CXXFLAGS) -c $< -o $@
+
+$(TEST_TARGET): $(TEST_OBJ)
+	@echo [link] $@
+	@$(CXX) $(TEST_OBJ) -o $@ $(TEST_LIBS)
+
+test: $(TEST_TARGET)
+	@$(TEST_TARGET)
 
 clean:
 	@rm -rf $(BUILD)
