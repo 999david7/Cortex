@@ -87,12 +87,11 @@ else
     CXXFLAGS   += $(ARCH_FLAGS) -DGL_SILENCE_DEPRECATION
     LDFLAGS    := $(ARCH_FLAGS)
     MM_SRC     := src/sys_mac.mm
-    # ImGui's clipboard uses the pasteboard API in ApplicationServices.
+    # What a static GLFW needs from the system, plus OpenGL itself.
     MAC_FRAMEWORKS := -framework Cocoa -framework OpenGL -framework IOKit \
-                      -framework CoreFoundation -framework CoreVideo -framework QuartzCore \
-                      -framework ApplicationServices
+                      -framework CoreFoundation -framework CoreVideo -framework QuartzCore
     LIBS       := $(GLFW_LIBS) -lcurl $(MAC_FRAMEWORKS)
-    TEST_LIBS  := $(ARCH_FLAGS) -framework ApplicationServices
+    TEST_LIBS  := $(ARCH_FLAGS)
   else
     LDFLAGS    :=
     LIBS       := $(GLFW_LIBS) -lGL -lcurl -lpthread -ldl

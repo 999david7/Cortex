@@ -167,6 +167,10 @@ int main() {
     // The app runs with keyboard navigation on; so does the harness, or keys
     // ImGui's navigation takes would pass here and fail there.
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // Windows key semantics everywhere, so "Ctrl" means the same on every
+    // machine the tests run on. On a Mac ImGui would otherwise swap Ctrl and
+    // Cmd; the Mac keys get their own section below.
+    io.ConfigMacOSXBehaviors = false;
     ui::apply_style(1.0f);
     ui::load_fonts(1.0f);
     unsigned char* pixels;
@@ -609,6 +613,49 @@ int main() {
     press(ImGuiKey_Z, true);
     CHECK_EQ(E->modified(), false);
     CHECK_EQ(E->text(), std::string("ab"));
+
+    // ---- macOS keys: Cmd and Option, with ImGui's Mac behaviours on ----
+    {
+        io.ConfigMacOSXBehaviors = true;
+        // With Mac behaviours ImGui reads Cmd (Super) as Ctrl, so Cmd is sent
+        // as Super here, exactly as the GLFW backend sends it.
+        auto mac = [&](ImGuiKey k, bool cmd, bool shift, bool opt) {
+            io.AddKeyEvent(ImGuiMod_Super, cmd);
+            io.AddKeyEvent(ImGuiMod_Shift, shift);
+            io.AddKeyEvent(ImGuiMod_Alt, opt);
+            io.AddKeyEvent(k, true);
+            frame();
+            io.AddKeyEvent(k, false);
+            io.AddKeyEvent(ImGuiMod_Super, false);
+            io.AddKeyEvent(ImGuiMod_Shift, false);
+            io.AddKeyEvent(ImGuiMod_Alt, false);
+            frame();
+        };
+        setup("    hello big world\nnext");
+        mac(ImGuiKey_RightArrow, true, false, false); // Cmd+Right: line end
+        CHECK_EQ(E->cursor(), ed::Coord(0, 19));
+        mac(ImGuiKey_LeftArrow, true, false, false); // Cmd+Left: first character
+        CHECK_EQ(E->cursor(), ed::Coord(0, 4));
+        mac(ImGuiKey_RightArrow, false, false, true); // Option+Right: by word
+        CHECK_EQ(E->cursor(), ed::Coord(0, 10));
+        mac(ImGuiKey_RightArrow, false, true, true); // Shift+Option+Right selects a word
+        CHECK_EQ(carets_str(), std::string("0:10-0:14"));
+        mac(ImGuiKey_DownArrow, true, false, false); // Cmd+Down: end of file
+        CHECK_EQ(E->cursor(), ed::Coord(1, 4));
+        mac(ImGuiKey_UpArrow, true, false, false); // Cmd+Up: start of file
+        CHECK_EQ(E->cursor(), ed::Coord(0, 0));
+        mac(ImGuiKey_RightArrow, true, false, false);
+        mac(ImGuiKey_Backspace, false, false, true); // Option+Backspace: a word
+        CHECK_EQ(E->line(0), std::string("    hello big "));
+        mac(ImGuiKey_Backspace, true, false, false); // Cmd+Backspace: to line start
+        CHECK_EQ(E->line(0), std::string(""));
+        mac(ImGuiKey_Z, true, false, false); // Cmd+Z undoes
+        CHECK_EQ(E->line(0), std::string("    hello big "));
+        mac(ImGuiKey_D, true, false, false); // Cmd+D still adds occurrences
+        mac(ImGuiKey_F, true, false, true);  // Cmd+Option+F opens replace
+        CHECK_EQ(E->find_open(), true);
+        io.ConfigMacOSXBehaviors = false;
+    }
 
     // ---- stress: thousands of carets, a large file ----
     {

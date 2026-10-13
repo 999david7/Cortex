@@ -2662,13 +2662,12 @@ void TextEditor::handle_keyboard() {
         return ctrl == c && shift == s && alt == a && ImGui::IsKeyPressed(k, repeat);
     };
 
-#ifdef __APPLE__
-    // macOS conventions, with ImGui reading Cmd as Ctrl: Cmd+arrows go to the
-    // edges of the line and the file, Option+arrows move by word, and the same
-    // keys with Backspace delete that far. Expanding the selection moves to
-    // Ctrl+Shift+Cmd+arrows, as in VS Code, since Shift+Option+arrows selects
-    // by word here.
-    {
+    // macOS conventions, on whenever ImGui runs with its Mac behaviours (it
+    // then reads Cmd as Ctrl): Cmd+arrows go to the edges of the line and the
+    // file, Option+arrows move by word, and the same keys with Backspace
+    // delete that far. Expanding the selection moves to Ctrl+Shift+Cmd+arrows,
+    // as in VS Code, since Shift+Option+arrows selects by word here.
+    if (io.ConfigMacOSXBehaviors) {
         const bool left = ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true);
         const bool right = ImGui::IsKeyPressed(ImGuiKey_RightArrow, true);
         const bool up = ImGui::IsKeyPressed(ImGuiKey_UpArrow, true);
@@ -2688,7 +2687,6 @@ void TextEditor::handle_keyboard() {
         }
         if (key(ImGuiKey_F, true, false, true, false)) { open_replace(); return; }
     }
-#endif
 
     // --- history / clipboard ---
     if (key(ImGuiKey_Z, true, false, false)) { undo(); return; }
